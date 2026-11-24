@@ -1,0 +1,14 @@
+{
+  "skill": "xv6-dual-arch-pitfalls",
+  "should_trigger": [
+    "Fix secondary hart hang on LoongArch QEMU during SMP boot",
+    "Implement LoongArch ECAM PCI_COMMAND_MASTER clearing and DMWIN_MASK DMA address conversion",
+    "Debug lost UART interrupts in devintr on RISC-V and LoongArch"
+  ],
+  "should_not_trigger": [
+    "Fix FAT32 unlink while open directory-entry corruption",
+    "Design fixed-width IPC message header, capability flags, and epoch invalidation policy",
+    "Update README documentation"
+  ],
+  "verification_command": "make -C src ARCH=riscv kernel/kernel && make -C src ARCH=loongarch kernel/kernel"
+}

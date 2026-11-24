@@ -56,3 +56,4 @@
 ## 6. 已有分类
 
 - [architecture](architecture/20261124-001-microkernel-architecture.md) 保存架构取舍、基线探索与验证设计的关键提示词。
+- [agent-setup](agent-setup/20261125-001-repo-agent-config-refinement.md) 保存仓库级 `AGENTS.md`、`.agents/skills/` 与工程协作约束配置的关键提示词。

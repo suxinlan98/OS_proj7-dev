@@ -1,0 +1,14 @@
+{
+  "skill": "xv6-fs-compatibility",
+  "should_trigger": [
+    "Fix ext2 mountpoint unlink check and busy umount semantics",
+    "Debug xv6fs WAL log recovery failure in test-xv6.py crash",
+    "Prevent FAT32 writes on an unlinked open file descriptor from corrupting reused slots"
+  ],
+  "should_not_trigger": [
+    "Tune LoongArch tcfg timer interrupt period for SMP wakeups",
+    "Add endpoint capability checking to kernel ipc_call",
+    "Fix UART line discipline backspace handling in consdrvd"
+  ],
+  "verification_command": "make ext2 && make run && make loongarch_ext2 && make run"
+}

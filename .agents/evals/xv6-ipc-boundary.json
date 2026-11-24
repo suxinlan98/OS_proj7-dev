@@ -1,0 +1,14 @@
+{
+  "skill": "xv6-ipc-boundary",
+  "should_trigger": [
+    "Implement zero-kalloc ipc_call, ipc_recv, and ipc_copy with cross-space grant pinning",
+    "Design service crash-recovery state machine, epoch invalidation, and DMA page quarantine policy",
+    "Add VFS_OP_FORK_BATCH RPC to kfork without holding child spinlocks"
+  ],
+  "should_not_trigger": [
+    "Fix LoongArch TLB refill vector and ECAM PCI register programming",
+    "Fix FAT32 long filename directory lookup",
+    "Fix unused variable compiler warning in usertests.c"
+  ],
+  "verification_command": "make -C src ARCH=riscv kernel/kernel && make -C src ARCH=loongarch kernel/kernel"
+}
