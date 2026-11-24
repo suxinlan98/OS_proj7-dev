@@ -1,0 +1,41 @@
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Python cache
+__pycache__/
+*.pyc
+
+# xv6 build outputs
+*.o
+*.d
+*.asm
+*.sym
+*.img
+.gdbinit
+
+# Generated xv6 binaries and build products
+src/kernel/kernel
+src/mkfs/mkfs
+src/mkfs/mkfat32
+src/user/_*
+src/user/usys.S
+
+# Temporary outputs
+*.tmp
+*.bak
+*.out
+
+# Local planning notes not intended for submission
+plan/
+
+# Root Makefile stores the selected test here.
+.last-test
+.last-test-arch
+
+# Logs
+*.log
