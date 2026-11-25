@@ -34,7 +34,7 @@
 * **严重级别**：`P0` ｜ **核验方式**：静态核验
 * **现象与根因**：
   1. `proc_freepagetable()` 仅卸载 `[0, sz)` 并逐页 `kfree()`，随后 `freewalk()` 遇到任意残留叶子 PTE 即 `panic("freewalk: leaf")`。
-  2. 若 MMIO 落在 `[0, sz)`，RISC-V 会触发 `panic("kfree")`；更致命的是 LoongArch64 因 `kfree()` 下界错用 `end` 而非 `RAMBASE`（见 `baseline_bugs.md` `BUG-HAL-04`），**不会 Panic 而是直接 `memset(mmio_pa, 1, 4096)` 写毁硬件寄存器并挂入空闲链表**。
+  2. 若 MMIO 落在 `[0, sz)`，RISC-V 会触发 `panic("kfree")`；更致命的是 LoongArch64 因 `kfree()` 下界错用 `end` 而非 `RAMBASE`（见 [`bugs.md`](bugs.md) `BUG-HAL-04`，已前置修复），**不会 Panic 而是直接 `memset(mmio_pa, 1, 4096)` 写毁硬件寄存器并挂入空闲链表**。
   3. 若 `kfork()` 继承设备映射或 `kexec()` 未清理设备映射，将造成权限泄漏与重复释放。
 * **规避方案**：所有设备映射放置于 `sz` 之上的受控高地址区（以 `TRAPFRAME` 为锚点向下划定 `DEV_MMIO`/`DEV_DMA`），并在 `struct proc` 登记 `devmaps[]`；`kfork()` 禁止继承、`kexec()` 禁止保留；退出时严格按序执行：① 硬件停机/截断 DMA → ② `uvmunmap(MMIO, do_free=0)` → ③ `uvmunmap(DMA, do_free=1)` → ④ `uvmfree(sz)`。
 
@@ -164,7 +164,7 @@
 ### [TRAP-13] 测试框架日志正则契约、提示符协议与故障隔离输出约束
 
 * **位置**：`src/test-xv6.py:126, 157`、`tests/runner/run_qemu_case.py:108`、`tests/*/run.sh`
-* **严重级别**：`P1` ｜ **核验方式**：静态核验（代码错误已剥离至 `baseline_bugs.md` `BUG-TEST-07`）
+* **严重级别**：`P1` ｜ **核验方式**：静态核验（代码错误已剥离至 [`bugs.md`](bugs.md) `BUG-TEST-07`）
 * **现象与根因**：
   1. `test-xv6.py` 严格正则匹配行首 `^recovering` 与 `^ireclaim` 验证崩溃恢复；
   2. `run_qemu_case.py --prompt-wait` 依赖终端静默且末尾为 `$`；

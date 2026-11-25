@@ -58,3 +58,4 @@
 - [architecture](architecture/20261124-001-microkernel-architecture.md) 保存架构取舍、基线探索与验证设计的关键提示词。
 - [agent-setup](agent-setup/20261125-001-repo-agent-config-refinement.md) 保存仓库级 `AGENTS.md`、`.agents/skills/` 与工程协作约束配置的关键提示词。
 - [debugging](debugging/20261125-001-baseline-bugs-and-ci-fixes.md) 保存基线缺陷分阶段修复与 CI/运行时根因排查的关键提示词。
+- [documentation](documentation/20261125-001-docs-cleanup-and-root-readme.md) 保存项目文档体系整理与长期维护文档重构的关键提示词。

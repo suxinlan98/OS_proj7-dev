@@ -173,7 +173,7 @@ _Static_assert(sizeof(struct ipc_msg) == 64, "ipc_msg must be 64 bytes");
 - **11-Opcode 卷后端协议**（`vfsd → ext2d / fat32d`）：
   - `MOUNT`, `UMOUNT`, `LOOKUP_PATH`（支持单次 IPC 解析卷内多级无挂载点子路径，避免逐级往返）, `CREATE`, `UNLINK`, `LINK`, `READ`, `WRITE`, `STAT`, `TRUNC`, `RELEASE`；
   - **严格单向依赖**：嵌套挂载点的 `unlink` 占用检查前置在 `vfsd` 中完成（查表并预留目录项至后端回复），禁止 `ext2d`/`fat32d` 回调 `vfsd`；
-  - **跨进程引用协同**：`LOOKUP_PATH`/`CREATE`/`MOUNT` 在后端持有 `ip->ref`，仅当 `vfsd` 的 vnode 引用归零时发送 `FS_OP_RELEASE`，完整支持 `unlinkopen` 延迟回收（同步修正基线 `BUG-18`：FAT32 `unlink` 时清除 `addrs[1]` 防止后续写覆盖已复用目录槽）；卷重启时 `vfsd` 一次性清空旧纪元引用，杜绝僵尸引用阻断卸载。
+  - **跨进程引用协同**：`LOOKUP_PATH`/`CREATE`/`MOUNT` 在后端持有 `ip->ref`，仅当 `vfsd` 的 vnode 引用归零时发送 `FS_OP_RELEASE`，完整支持 `unlinkopen` 延迟回收（基线 `BUG-FS-04` 已前置修复，迁出后须继续保持 FAT32 `unlink` 清除 `addrs[1]` 防止后续写覆盖已复用目录槽）；卷重启时 `vfsd` 一次性清空旧纪元引用，杜绝僵尸引用阻断卸载。
 
 ---
 
@@ -241,7 +241,7 @@ _Static_assert(sizeof(struct ipc_msg) == 64, "ipc_msg must be 64 bytes");
 - **内存占用**：BootFS + 6 常驻服务 + 保底页总计控制在 **< 5 MiB**，保障 `sbrkmuch` / `sbrkfail`（100 MiB / 128 MiB）测试余量；报告单列内核 `text/data/bss`、BootFS、服务常驻页与预留页。
 
 ### 2. 全量验证与性能对照口径
-- **基线前置修正**：重构前先修正 `baseline_debug.md` 中的基线与工具问题（`BUG-06` 龙芯锁竞争、`BUG-15` GCC 16 `fsblocks`、`BUG-16` runner 收尾 reject 漏判、`BUG-17` `pkill` 进程组隔离、`BUG-18` FAT32 `unlinkopen` 残余 `addrs[1]`、`BUG-19` `vfsbench` 字节校验及龙芯副核初始化缺陷）。
+- **基线缺陷前置清零（已完成）**：[基线缺陷清单](../baseline/bugs.md) 收录的全部 **57 项原始基线缺陷**（16 项 P0、34 项 P1、7 项 P2，涵盖双架构 HAL/副核启动/DMWIN1/`kfree` 下界、VFS/ext2/FAT32 并发与匿名槽、进程/ELF/管道锁安全，以及构建/测试判分器缺陷）均已提前完成根因修复，并通过 RISC-V 与 LoongArch64 双架构全量回归验证。微内核拆分直接建立在该已验证的洁净双架构基线之上，同时持续遵守 [工程陷阱手册](../baseline/traps.md) 中的架构红线。
 - **兼容性验收**：双架构通过 `make verify-all`（11 套扩展测试 + 完整 `usertests`）及独立镜像副本的 `test-xv6.py crash`；双架构连续 20 轮运行 `tests/fault_isolation/`（F1–F7）统计成功率、MTTR ticks、空闲页与僵尸数。
 - **性能与对照基准**：宏内核与微内核在相同架构、CPU 数（`CPUS=3`）、工具链与镜像下各跑 5 次冷启动与固定负载，报告 `vfsbench` / `bigfile`（1 MiB 校验）中位数与区间、每 MiB 的 IPC 与块请求次数，并与 MINIX 3 进行架构对照。
 - **双轨展示**：(1) 双架构原生 QEMU 串口实录脚本与 runner 日志；(2) 适配 [web/server/terminal-session.js](../../web/server/terminal-session.js#L76-L81) 支持 Linux 原生 `qemu-system-riscv64` / `qemu-system-loongarch64`（`CPUS=3`），升级现有 `web/` 控制台为实时微内核拓扑、IPC 调用链与一键故障自愈观测台。
