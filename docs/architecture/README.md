@@ -244,4 +244,4 @@ _Static_assert(sizeof(struct ipc_msg) == 64, "ipc_msg must be 64 bytes");
 - **基线前置修正**：重构前先修正 `baseline_debug.md` 中的基线与工具问题（`BUG-06` 龙芯锁竞争、`BUG-15` GCC 16 `fsblocks`、`BUG-16` runner 收尾 reject 漏判、`BUG-17` `pkill` 进程组隔离、`BUG-18` FAT32 `unlinkopen` 残余 `addrs[1]`、`BUG-19` `vfsbench` 字节校验及龙芯副核初始化缺陷）。
 - **兼容性验收**：双架构通过 `make verify-all`（11 套扩展测试 + 完整 `usertests`）及独立镜像副本的 `test-xv6.py crash`；双架构连续 20 轮运行 `tests/fault_isolation/`（F1–F7）统计成功率、MTTR ticks、空闲页与僵尸数。
 - **性能与对照基准**：宏内核与微内核在相同架构、CPU 数（`CPUS=3`）、工具链与镜像下各跑 5 次冷启动与固定负载，报告 `vfsbench` / `bigfile`（1 MiB 校验）中位数与区间、每 MiB 的 IPC 与块请求次数，并与 MINIX 3 进行架构对照。
-- **双轨展示**：(1) 双架构原生 QEMU 串口实录脚本与 runner 日志；(2) 适配 [web/server/terminal-session.js](file:///home/gly/code/realproj/OS_proj7-dev/web/server/terminal-session.js#L76-L81) 支持 Linux 原生 `qemu-system-riscv64` / `qemu-system-loongarch64`（`CPUS=3`），升级现有 `web/` 控制台为实时微内核拓扑、IPC 调用链与一键故障自愈观测台。
+- **双轨展示**：(1) 双架构原生 QEMU 串口实录脚本与 runner 日志；(2) 适配 [web/server/terminal-session.js](../../web/server/terminal-session.js#L76-L81) 支持 Linux 原生 `qemu-system-riscv64` / `qemu-system-loongarch64`（`CPUS=3`），升级现有 `web/` 控制台为实时微内核拓扑、IPC 调用链与一键故障自愈观测台。

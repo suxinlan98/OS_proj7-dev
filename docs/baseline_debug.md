@@ -7,7 +7,7 @@
 ## 一、环境与代码基线快照
 
 - **基线提交**：`e5fcf65` (`chore: 初始化xv6-microkernel基线`)
-- **工具链实测**（经 [check_env.sh](file:///home/gly/code/realproj/OS_proj7-dev/tests/check_env.sh) 验证）：
+- **工具链实测**（经 [check_env.sh](../tests/check_env.sh) 验证）：
   - RISC-V：`riscv64-linux-gnu-gcc`、`qemu-system-riscv64`（均已就绪）
   - LoongArch64：`loongarch64-linux-gnu-gcc`、`qemu-system-loongarch64`（均已就绪）
   - 宿主镜像工具：`mkfs.ext2`、`debugfs`、`python3`、`make`（均已就绪）
@@ -23,8 +23,8 @@
 
 ### [BUG/TRAP-01] `vmfault()` 隐式耦合 `myproc()`，跨进程拷贝将误判地址上限与页表
 - **位置**：
-  - RISC-V：[src/kernel/vm.c#L452-L473](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/vm.c#L452-L473)
-  - LoongArch64：[src/kernel/arch/loongarch/vm.c#L204-L231](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/vm.c#L204-L231)
+  - RISC-V：[src/kernel/vm.c#L452-L473](../src/kernel/vm.c#L452-L473)
+  - LoongArch64：[src/kernel/arch/loongarch/vm.c#L204-L231](../src/kernel/arch/loongarch/vm.c#L204-L231)
 - **现象与根因**：
   - `copyin(pagetable, ...)` 与 `copyout(pagetable, ...)` 虽然显式接收 `pagetable` 参数，但在缺页时调用的 `vmfault(pagetable, va, read)` 内部却硬编码使用 `struct proc *p = myproc()`，以 `p->sz` 检查越界，并（在 RISC-V 中）直接向 `p->pagetable` 写入新映射。
   - 在微内核下，当用户态服务进程（如 `vfsd`、`ext2d`）调用跨进程授权拷贝 `ipc_copy()` 访问客户端的懒分配内存页（`usertests` 中的 `sbrkarg`、`rwsbrk` 用例）时，`myproc()` 是**服务端进程**而非**客户端进程**，会导致错误拒绝合法懒分配页或将页误映射到服务端页表！
@@ -33,8 +33,8 @@
 
 ### [TRAP-02] 用户态驱动映射 MMIO/DMA 后，进程退出会触发 `kfree` / `freewalk` Panic
 - **位置**：
-  - RISC-V：[src/kernel/vm.c#L263-L288](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/vm.c#L263-L288)、[src/kernel/kalloc.c#L51-L56](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/kalloc.c#L51-L56)
-  - LoongArch64：[src/kernel/arch/loongarch/vm.c#L247-L269](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/vm.c#L247-L269)
+  - RISC-V：[src/kernel/vm.c#L263-L288](../src/kernel/vm.c#L263-L288)、[src/kernel/kalloc.c#L51-L56](../src/kernel/kalloc.c#L51-L56)
+  - LoongArch64：[src/kernel/arch/loongarch/vm.c#L247-L269](../src/kernel/arch/loongarch/vm.c#L247-L269)
 - **现象与根因**：
   - `proc_freepagetable()` 调用 `uvmfree(pagetable, sz)` 仅卸载 `[0, sz)` 并对页内物理地址执行 `kfree()`，随后 `freewalk()` 遇到任何残留叶子 PTE 都会 `panic("freewalk: leaf")`。
   - 如果设备驱动（`blkdrvd`/`consdrvd`）将 MMIO 地址（如 `0x10000000`、`0x1fe00000`）映射到用户态：
@@ -49,17 +49,17 @@
 
 ### [TRAP-03] LoongArch64 MMIO 非页对齐、缓存属性（`MAT`）及 DMA 地址掩码
 - **位置**：
-  - [src/kernel/memlayout.h#L1-L29](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/memlayout.h#L1-L29)
-  - [src/kernel/arch/loongarch/loongarch.h#L299-L315](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/loongarch.h#L299-L315)
-  - [src/kernel/virtio_disk.c#L40-L48](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/virtio_disk.c#L40-L48)
+  - [src/kernel/memlayout.h#L1-L29](../src/kernel/memlayout.h#L1-L29)
+  - [src/kernel/arch/loongarch/loongarch.h#L299-L315](../src/kernel/arch/loongarch/loongarch.h#L299-L315)
+  - [src/kernel/virtio_disk.c#L40-L48](../src/kernel/virtio_disk.c#L40-L48)
 - **发现与分析**：
   1. LoongArch64 的 `UART0` 物理地址为 `0x1fe001e0`，**非 4KB 对齐**（页内偏移 `0x1e0`）。`dev_map()` 必须按 `PGROUNDDOWN(pa)` 映射整页，并向驱动返回 `user_va + (pa & (PGSIZE-1))`。
   2. LoongArch64 页表项中 `PTE_MAT = (1L << 4)` 表示**一致可缓存（Coherent Cached）**；映射 MMIO 设备寄存器到用户态时**必须清除 `PTE_MAT`**（即 `MAT=0`，强序非缓存），同时保留 `PTE_P | PTE_W | PTE_D | PTE_PLV | PTE_V`。
   3. LoongArch64 上 `kalloc()` 返回的是带直接映射窗口前缀 `DMWIN_MASK (0x9000000000000000)` 的内核虚拟地址，而 VirtIO DMA 需要纯物理地址。`dma_alloc()` 返回给用户态 `blkdrvd` 的 DMA 物理地址必须剥离 `DMWIN_MASK`（`pa & ~DMWIN_MASK`）。
-  4. **内存布局利好**：LoongArch64 内核镜像链接于 `0x9000000000200000`，而 `kalloc()` 内存池位于 `0x9000000090000000` 起 128MB（见 [arch/loongarch/kernel.ld](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/kernel.ld) 与 [kalloc.c](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/kalloc.c#L30-L34)），因此 BootFS 嵌入 `.rodata` 在 LoongArch64 上完全不消耗 `kalloc()` 可用页。
+  4. **内存布局利好**：LoongArch64 内核镜像链接于 `0x9000000000200000`，而 `kalloc()` 内存池位于 `0x9000000090000000` 起 128MB（见 [arch/loongarch/kernel.ld](../src/kernel/arch/loongarch/kernel.ld) 与 [kalloc.c](../src/kernel/kalloc.c#L30-L34)），因此 BootFS 嵌入 `.rodata` 在 LoongArch64 上完全不消耗 `kalloc()` 可用页。
 
 ### [TRAP-04] LoongArch64 Legacy INTx 电平中断丢失风险
-- **位置**：[src/kernel/arch/loongarch/trap.c#L192-L216](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/trap.c#L192-L216)、[src/kernel/virtio_disk.c#L493-L520](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/virtio_disk.c#L493-L520)
+- **位置**：[src/kernel/arch/loongarch/trap.c#L192-L216](../src/kernel/arch/loongarch/trap.c#L192-L216)、[src/kernel/virtio_disk.c#L493-L520](../src/kernel/virtio_disk.c#L493-L520)
 - **现象与根因**：
   - 在 QEMU `loongarch64` 的 `virtio-blk-pci` (`vectors=0`) 下，采用传统电平中断（INTx）经 LS7A APIC -> EXTIOI 路由。若新的完成事件在清除上一次中断的窗口期内到达，中断控制器链路可能吞掉中断，导致等待磁盘完成的进程永久休眠。
   - 基线内核通过“驱动 ack 后循环重检 `virtio_disk_pending()`”叠加“时钟中断调用 `virtio_disk_watchdog()`”规避该问题。
@@ -67,7 +67,7 @@
   - 微内核化后，内核 `devintr()` 在收到 `VIRTIO0_IRQ` 时先在中断控制器侧屏蔽/完成并向 `blkdrvd` 投递异步 `NOTIFY_IRQ`；`blkdrvd` 处理完 used ring 并调用 `irq_ack()` 后，必须再次复检 `used_idx != used->idx`；同时内核定时器在存在未完成块请求时周期投递轻量级 `NOTIFY_WATCHDOG` 兜底。
 
 ### [TRAP-05] LoongArch64 `uservec`/`userret` 每次陷入均全量刷 TLB，放大多跳 IPC 开销
-- **位置**：[src/kernel/arch/loongarch/uservec.S#L52](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/uservec.S#L52)、[src/kernel/arch/loongarch/uservec.S#L59](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/uservec.S#L59)
+- **位置**：[src/kernel/arch/loongarch/uservec.S#L52](../src/kernel/arch/loongarch/uservec.S#L52)、[src/kernel/arch/loongarch/uservec.S#L59](../src/kernel/arch/loongarch/uservec.S#L59)
 - **现象与分析**：
   - 基线 LoongArch64 未启用按进程 `ASID` 隔离，每次 `uservec` / `userret` 都执行 `invtlb 0x0, $zero, $zero` 全量刷新 TLB。
   - 在微内核下，若每次 512B 读写都触发多跳无缓存 IPC，在 LoongArch64 QEMU 下的开销会被成倍放大，可能导致 `full_usertests.sh`（800s 超时）或 `mount_storm` 变慢。
@@ -75,12 +75,12 @@
   - 必须在各用户态文件系统服务（`xv6fsd`/`ext2d`/`fat32d`）内通过 `libfs` 维护写穿 LRU 块缓存（大幅削减向 `blkdrvd` 的 IPC 频次），并将读写分片保持在 4KB 粒度；如后续基准测试仍需提速，可进一步为 LoongArch64 引入按 `pid` 的低成本 ASID（`w_csr_asid`）优化。
 
 ### [BUG-06] LoongArch64 `trap.c` 存在无锁访问 `p->killed` 的 SMP 数据竞争
-- **位置**：[src/kernel/arch/loongarch/trap.c#L85-L105](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/trap.c#L85-L105)
-- **现象**：RISC-V 的 [trap.c](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/trap.c#L57-L80) 使用加锁函数 `killed(p)` / `setkilled(p)`，而 LoongArch64 版本直接读写 `p->killed`，在 `CPUS=3` 与并发 `kill()`/故障注入下存在数据竞争。
+- **位置**：[src/kernel/arch/loongarch/trap.c#L85-L105](../src/kernel/arch/loongarch/trap.c#L85-L105)
+- **现象**：RISC-V 的 [trap.c](../src/kernel/trap.c#L57-L80) 使用加锁函数 `killed(p)` / `setkilled(p)`，而 LoongArch64 版本直接读写 `p->killed`，在 `CPUS=3` 与并发 `kill()`/故障注入下存在数据竞争。
 - **规避措施**：重构微内核陷阱路径时统一改为 `killed(p)` / `setkilled(p)`。
 
 ### [TRAP-07] LoongArch64 `virtio_pci` 重启时的 PCI BAR 幂等分配
-- **位置**：[src/kernel/arch/loongarch/virtio_pci.c#L52](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/virtio_pci.c#L52)、[src/kernel/arch/loongarch/virtio_pci.c#L109-L152](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/virtio_pci.c#L109-L152)
+- **位置**：[src/kernel/arch/loongarch/virtio_pci.c#L52](../src/kernel/arch/loongarch/virtio_pci.c#L52)、[src/kernel/arch/loongarch/virtio_pci.c#L109-L152](../src/kernel/arch/loongarch/virtio_pci.c#L109-L152)
 - **分析**：当 `blkdrvd` 崩溃并重启后，QEMU 虚拟 PCI 设备的 BAR 寄存器已保留首次分配的地址。重启后的 `blkdrvd` 若保持确定性 `next_mmio` 起点或复用已配置的合法 BAR 地址，再写入 `device_status = 0`（等待读回 0）完成 VirtIO 硬复位，即可干净重置设备队列而无需重启系统。
 
 ---
@@ -89,9 +89,9 @@
 
 ### [TRAP-08] 嵌套挂载点的 `unlink` 保护存在“FS 回调 VFS”逆向依赖
 - **位置**：
-  - [src/kernel/ext2.c#L904-L908](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/ext2.c#L904-L908)
-  - [src/kernel/fat32.c#L1139-L1143](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/fat32.c#L1139-L1143)
-  - 测试覆盖：[tests/mount_lifecycle/cmds.sh](file:///home/gly/code/realproj/OS_proj7-dev/tests/mount_lifecycle/cmds.sh)（在 `/mnt/nest` 上嵌套挂载 fat32 后尝试 `rm /mnt/nest` 必须失败）
+  - [src/kernel/ext2.c#L904-L908](../src/kernel/ext2.c#L904-L908)
+  - [src/kernel/fat32.c#L1139-L1143](../src/kernel/fat32.c#L1139-L1143)
+  - 测试覆盖：[tests/mount_lifecycle/cmds.sh](../tests/mount_lifecycle/cmds.sh)（在 `/mnt/nest` 上嵌套挂载 fat32 后尝试 `rm /mnt/nest` 必须失败）
 - **现象与根因**：
   - 宏内核中，`ext2_unlink` 和 `fat32_unlink` 直接回调 `vfs_mountpoint(ip)` 判断目标目录是否是另一文件系统的挂载点。
   - 迁出至用户态后，`ext2d`/`fat32d` 不能反向调用 `vfsd`（否则形成 `vfsd -> ext2d -> vfsd` 循环调用死锁）。
@@ -100,17 +100,17 @@
 
 ### [TRAP-09] Unlink-While-Open（已删除但仍打开文件）的跨进程引用计数协同
 - **位置**：
-  - [src/kernel/fs.c#L374-L400](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/fs.c#L374-L400)
-  - [src/kernel/ext2.c#L922-L925](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/ext2.c#L922-L925)、[src/kernel/ext2.c#L1128-L1132](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/ext2.c#L1128-L1132)
-  - [src/kernel/fat32.c#L1147-L1150](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/fat32.c#L1147-L1150)
-  - 测试覆盖：[tests/semantics/cmds.sh](file:///home/gly/code/realproj/OS_proj7-dev/tests/semantics/cmds.sh)（`unlinkopen /mnt/uop.txt`、`unlinkopen /fat/uop.txt`）
+  - [src/kernel/fs.c#L374-L400](../src/kernel/fs.c#L374-L400)
+  - [src/kernel/ext2.c#L922-L925](../src/kernel/ext2.c#L922-L925)、[src/kernel/ext2.c#L1128-L1132](../src/kernel/ext2.c#L1128-L1132)
+  - [src/kernel/fat32.c#L1147-L1150](../src/kernel/fat32.c#L1147-L1150)
+  - 测试覆盖：[tests/semantics/cmds.sh](../tests/semantics/cmds.sh)（`unlinkopen /mnt/uop.txt`、`unlinkopen /fat/uop.txt`）
 - **现象与根因**：
   - 文件被打开后再 `unlink`，其数据块/簇链与 inode 必须持续存活直到最后一个 FD `close()` 触发 `iput()`。
 - **规避措施**：
   - VFS-to-FS IPC 协议引入显式 **Vnode 引用生命周期**：`LOOKUP`/`CREATE`/`MOUNT` 在 FS 服务本地持有 `ip->ref`；`vfsd` 维护全局 Vnode 缓存，仅当该 `(dev, inum)` 在 `vfsd` 中的引用计数归零时才向 FS 服务发送 `FS_OP_RELEASE(inum)`，从而 100% 保留原有 `iput()` 延迟回收语义。
 
 ### [TRAP-10] FAT32 无磁盘 inode 号，重启恢复依赖目录项偏移 `entry_off`
-- **位置**：[src/kernel/fat32.c#L406-L425](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/fat32.c#L406-L425)、[src/kernel/fat32.c#L581-L594](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/fat32.c#L581-L594)
+- **位置**：[src/kernel/fat32.c#L406-L425](../src/kernel/fat32.c#L406-L425)、[src/kernel/fat32.c#L581-L594](../src/kernel/fat32.c#L581-L594)
 - **现象与根因**：
   - `fat32.c` 以首簇号 `clus` 作为 `inum`，并在内存 `ip->addrs[1]` 中缓存目录项磁盘字节偏移 `entry_off`，写文件更新 `size` 时必须依赖 `entry_off` 回写目录项。
   - 若 `fat32d` 崩溃重启，仅凭 `(dev, inum)` 无法直接反查 `entry_off`。
@@ -118,7 +118,7 @@
   - `vfsd` 的文件表与检查点中为打开文件保存规范路径（或相对挂载点路径，用于重启后重解析）；`fat32d` 重启后，对已挂载路径的新请求及具名打开文件可通过路径重放恢复 `entry_off`；对已 `unlink` 的匿名文件则安全返回 `-1` 而避免误写磁盘。
 
 ### [TRAP-11] `kexec()` 路径回退规则与直接向新页表物理页加载 ELF
-- **位置**：[src/kernel/exec.c#L40-L57](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/exec.c#L40-L57)、[src/kernel/exec.c#L176-L197](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/exec.c#L176-L197)
+- **位置**：[src/kernel/exec.c#L40-L57](../src/kernel/exec.c#L40-L57)、[src/kernel/exec.c#L176-L197](../src/kernel/exec.c#L176-L197)
 - **现象与分析**：
   1. `kexec()` 在相对路径不含 `'/'` 且查找失败时，会自动回退到 `"/" + path`（确保在 `/mnt` 或 `/fat` 下执行 `ls`/`cat` 等根目录命令正常）；迁出 VFS 后必须保留此回退语义。
   2. `loadseg()` 将 ELF 段直接读入**新建页表**的内核物理地址（`user_dst = 0`），而非当前进程用户空间。
@@ -131,9 +131,9 @@
 
 ### [TRAP-12] `usertests` 极限资源压测与系统服务零资源占用要求
 - **位置**：
-  - [src/kernel/param.h](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/param.h)：`NPROC=64`, `NOFILE=16`, `NFILE=100`, `NINODE=50`
-  - [src/user/usertests.c](file:///home/gly/code/realproj/OS_proj7-dev/src/user/usertests.c)：`sbrkmuch`/`sbrkfail`（要求单进程分配 `BIG=100MB` / 128MB）、`mem`（耗尽物理内存）、`forkforkfork`（打满 `NPROC` 后仍需 `open("stopforking")`）、`maxfiles`/`iref`（测试打满 `NFILE`/`NINODE`）。
-  - [src/Makefile#L184-L188](file:///home/gly/code/realproj/OS_proj7-dev/src/Makefile#L184-L188)：`_forktest` 仅链接 `ulib.o` 与 `usys.o`，直接通过原始系统调用运行。
+  - [src/kernel/param.h](../src/kernel/param.h)：`NPROC=64`, `NOFILE=16`, `NFILE=100`, `NINODE=50`
+  - [src/user/usertests.c](../src/user/usertests.c)：`sbrkmuch`/`sbrkfail`（要求单进程分配 `BIG=100MB` / 128MB）、`mem`（耗尽物理内存）、`forkforkfork`（打满 `NPROC` 后仍需 `open("stopforking")`）、`maxfiles`/`iref`（测试打满 `NFILE`/`NINODE`）。
+  - [src/Makefile#L184-L188](../src/Makefile#L184-L188)：`_forktest` 仅链接 `ulib.o` 与 `usys.o`，直接通过原始系统调用运行。
 - **约束结论**：
   1. 全部微内核常驻服务（含 BootFS 镜像）总内存占用必须控制在 **< 8MB**（目标 2~4MB），保证 `sbrkmuch` 的 100MB 分配裕度充裕；
   2. IPC 热路径与常驻服务**禁止在请求处理期间调用 `kalloc()` / `malloc()` / `fork()`**，确保 `mem`/`sbrkfail`/`forkforkfork` 极限压测下绝不死锁；
@@ -143,15 +143,15 @@
 
 ### [TRAP-13] 启动日志、Crash 恢复匹配与测试脚本既有小缺陷
 - **位置**：
-  - [src/test-xv6.py#L49](file:///home/gly/code/realproj/OS_proj7-dev/src/test-xv6.py#L49)（失败日志保存写成了 `self.out` 而非 `self.output`）、[src/test-xv6.py#L81](file:///home/gly/code/realproj/OS_proj7-dev/src/test-xv6.py#L81)（`regexps` 未定义）
-  - [src/test-xv6.py#L126](file:///home/gly/code/realproj/OS_proj7-dev/src/test-xv6.py#L126) 与 [#L157](file:///home/gly/code/realproj/OS_proj7-dev/src/test-xv6.py#L157)：分别正则匹配 `^recovering` 与 `^ireclaim`。
-  - [tests/runner/run_qemu_case.py#L108](file:///home/gly/code/realproj/OS_proj7-dev/tests/runner/run_qemu_case.py#L108)：`--prompt-wait` 要求终端静默且末尾为 `$`，且各 `run.sh` 严格 `--reject "panic:"` 与 `--reject "kerneltrap"`。
+  - [src/test-xv6.py#L49](../src/test-xv6.py#L49)（失败日志保存写成了 `self.out` 而非 `self.output`）、[src/test-xv6.py#L81](../src/test-xv6.py#L81)（`regexps` 未定义）
+  - [src/test-xv6.py#L126](../src/test-xv6.py#L126) 与 [#L157](../src/test-xv6.py#L157)：分别正则匹配 `^recovering` 与 `^ireclaim`。
+  - [tests/runner/run_qemu_case.py#L108](../tests/runner/run_qemu_case.py#L108)：`--prompt-wait` 要求终端静默且末尾为 `$`，且各 `run.sh` 严格 `--reject "panic:"` 与 `--reject "kerneltrap"`。
 - **约束结论**：
   - `xv6fsd` 启动执行日志重放与孤儿回收时，必须保持原样输出 `recovering ...` 与 `ireclaim: ...` 至控制台；
   - 正常启动及运行期间，服务日志输出不可干扰 `$ ` 提示符或伪造错误关键字，且故障隔离测例中用户态服务崩溃绝对不能触发内核 `panic:` 或 `kerneltrap`。
 
 ### [TRAP-14] UART 内核早期输出与用户态 `consdrvd` 并发竞争
-- **位置**：[src/kernel/uart.c#L81-L124](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/uart.c#L81-L124)、[src/kernel/console.c#L140-L183](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/console.c#L140-L183)
+- **位置**：[src/kernel/uart.c#L81-L124](../src/kernel/uart.c#L81-L124)、[src/kernel/console.c#L140-L183](../src/kernel/console.c#L140-L183)
 - **现象与分析**：
   - 控制台 `^P` 需要触发内核 `procdump()`；同时内核在 `usertrap()` 异常打印与 `panic()` 时需要直接写串口。
   - 若内核与用户态 `consdrvd` 同时操作 `UART0` 的 `IER`/`RHR`，会造成接收字符被吞或 TX 中断丢失。
@@ -211,10 +211,10 @@ user/usertests.o: CFLAGS += -Wno-error=unused-but-set-variable
 
 ### BUG-20 · LoongArch64 副核未初始化页表与异常入口 CSR，调度即跳 `0x0` 并死持锁（静态核验）
 - **位置**：
-  - [src/kernel/main.c#L35-L43](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/main.c#L35-L43)
-  - [src/kernel/arch/loongarch/entry.S#L14](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/entry.S#L14)
-  - [src/kernel/arch/loongarch/vm.c#L21-L40](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/vm.c#L21-L40)
-  - [src/kernel/arch/loongarch/trap.c#L48-L65](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/trap.c#L48-L65)
+  - [src/kernel/main.c#L35-L43](../src/kernel/main.c#L35-L43)
+  - [src/kernel/arch/loongarch/entry.S#L14](../src/kernel/arch/loongarch/entry.S#L14)
+  - [src/kernel/arch/loongarch/vm.c#L21-L40](../src/kernel/arch/loongarch/vm.c#L21-L40)
+  - [src/kernel/arch/loongarch/trap.c#L48-L65](../src/kernel/arch/loongarch/trap.c#L48-L65)
 - **现象与根因**：
   - `entry.S` 在启动时将 `LOONGARCH_CSR_TLBRENTRY` 清零；仅 CPU 0 调用的 `kvminit()` 与 `trapinit()` 写入了 `PGDL`、`PWCL`、`PWCH`、`ECFG`、`TCFG`、`EENTRY`、`TLBRENTRY`、`MERRENTRY`。
   - 副核调用的 `kvminithart()` 仅执行 `tlbinit()`，`trapinithart()` 为完全空函数。一旦副核进入 `scheduler()` 持有 `p->lock` 并切换至 `KSTACK` 触发 TLB 重填，硬件将直接跳往地址 `0x0` 并永久死持 `p->lock`，导致全机死锁。
@@ -222,17 +222,17 @@ user/usertests.o: CFLAGS += -Wno-error=unused-but-set-variable
 
 ### BUG-21 · LoongArch64 默认时钟周期达 167.8ms，且缺少核间 IPI 唤醒 `idle 0` 副核（静态核验）
 - **位置**：
-  - [src/kernel/arch/loongarch/trap.c#L53](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/trap.c#L53)（`tcfg = 0x1000000UL | CSR_TCFG_EN | CSR_TCFG_PER`）
-  - [src/kernel/proc.c#L468-L471](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/proc.c#L468-L471)（`cpu_idle()` → `idle 0`）
+  - [src/kernel/arch/loongarch/trap.c#L53](../src/kernel/arch/loongarch/trap.c#L53)（`tcfg = 0x1000000UL | CSR_TCFG_EN | CSR_TCFG_PER`）
+  - [src/kernel/proc.c#L468-L471](../src/kernel/proc.c#L468-L471)（`cpu_idle()` → `idle 0`）
 - **现象与根因**：
   - QEMU LoongArch64 稳定计数器频率为 100 MHz，`0x1000000`（16,777,216）对应时钟中断周期长达 **167.8 ms**；且 `wakeup()` 不发送核间中断（IPI），若副核处于 `idle 0`，跨核 IPC 唤醒最坏延迟可达 167.8 ms（若副核 `TCFG` 未启则永久睡死）。
 - **修正方案**：缩短龙芯 `TCFG` 周期至 ~10 ms（按比例校准逻辑 `ticks`），在双架构引入轻量核间 IPI 唤醒（龙芯 IOCSR IPI / RISC-V 软中断），并在 IPC 唤醒时优先设置本核 `next_hint` 就地调度。
 
 ### BUG-22 · LoongArch64 串口与磁盘双双存在丢中断风险，且用户态 PCI 驱动崩溃时内核不知动态 BAR（静态核验）
 - **位置**：
-  - [src/kernel/arch/loongarch/apic.c#L14](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/apic.c#L14)（`UART0_IRQ` 设为边沿触发）
-  - [src/kernel/arch/loongarch/hal.c#L37-L39](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/hal.c#L37-L39)（`VIRTIO0_IRQ` 电平中断）
-  - [src/kernel/arch/loongarch/virtio_pci.c#L109-L152](file:///home/gly/code/realproj/OS_proj7-dev/src/kernel/arch/loongarch/virtio_pci.c#L109-L152)（动态分配 PCI BAR）
+  - [src/kernel/arch/loongarch/apic.c#L14](../src/kernel/arch/loongarch/apic.c#L14)（`UART0_IRQ` 设为边沿触发）
+  - [src/kernel/arch/loongarch/hal.c#L37-L39](../src/kernel/arch/loongarch/hal.c#L37-L39)（`VIRTIO0_IRQ` 电平中断）
+  - [src/kernel/arch/loongarch/virtio_pci.c#L109-L152](../src/kernel/arch/loongarch/virtio_pci.c#L109-L152)（动态分配 PCI BAR）
 - **现象与根因**：
   1. 除 `TRAP-04` 已指出的 VirtIO 电平吞中断外，`UART0` 在 LS7A APIC 中配置为边沿触发，若新字节在排空 `RHR` 与 `extioi_complete` 之间到达同样会丢失中断，导致用户态 `consdrvd` 永久沉睡；
   2. `virtio_pci` 迁出至用户态 `blkdrvd` 后，若驱动在注册 BAR 前崩溃或篡改 BAR，内核无法仅凭动态 BAR 复位 VirtIO 硬件。
