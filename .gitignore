@@ -19,6 +19,7 @@ __pycache__/
 .gdbinit
 
 # Generated xv6 binaries and build products
+/build/
 src/kernel/kernel
 src/mkfs/mkfs
 src/mkfs/mkfat32

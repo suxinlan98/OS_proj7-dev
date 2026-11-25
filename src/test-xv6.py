@@ -35,8 +35,9 @@ class QEMU(object):
 
     def reset_fs(self):
         try:
-            if os.path.exists("fs.img"):
-                os.remove("fs.img")
+            fs_img = os.path.join("..", "build", TEST_ARCH, "fs.img")
+            if os.path.exists(fs_img):
+                os.remove(fs_img)
             run(["make", f"ARCH={TEST_ARCH}", "fs.img"], check=True)
         except (OSError, subprocess.CalledProcessError) as e:
             print(f"reset_fs failed: {e}")

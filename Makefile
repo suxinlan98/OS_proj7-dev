@@ -53,7 +53,7 @@ define prepare_case
 		cd "$(XV6_DIR)" && \
 		make ARCH="$(TEST_ARCH)" clean && \
 		make ARCH="$(TEST_ARCH)" kernel/kernel && \
-		rm -f fs.img ext2.img fat32.img && \
+		rm -f "../build/$(TEST_ARCH)/fs.img" "../build/$(TEST_ARCH)/ext2.img" "../build/$(TEST_ARCH)/fat32.img" && \
 		make ARCH="$(TEST_ARCH)" fs.img \
 	) > "$$LOG_DIR/build.log" 2>&1; \
 	printf "%s\n" "$$TEST_NAME" > "$(STATE_FILE)"; \
@@ -115,7 +115,7 @@ smp:
 		cd "$(XV6_DIR)" && \
 		make ARCH="$(TEST_ARCH)" clean && \
 		make ARCH="$(TEST_ARCH)" kernel/kernel && \
-		rm -f fs.img ext2.img fat32.img && \
+		rm -f "../build/$(TEST_ARCH)/fs.img" "../build/$(TEST_ARCH)/ext2.img" "../build/$(TEST_ARCH)/fat32.img" && \
 		make ARCH="$(TEST_ARCH)" fs.img \
 	) > "$$LOG_DIR/build.log" 2>&1; \
 	printf "%s\n" "$$TEST_NAME" > "$(STATE_FILE)"; \
@@ -144,7 +144,7 @@ define prepare_extended_case
 		cd "$(XV6_DIR)" && \
 		make ARCH="$(TEST_ARCH)" clean && \
 		make ARCH="$(TEST_ARCH)" kernel/kernel && \
-		rm -f fs.img ext2.img fat32.img && \
+		rm -f "../build/$(TEST_ARCH)/fs.img" "../build/$(TEST_ARCH)/ext2.img" "../build/$(TEST_ARCH)/fat32.img" && \
 		make ARCH="$(TEST_ARCH)" fs.img \
 	) > "$$LOG_DIR/build.log" 2>&1; \
 	printf "%s\n" "$$TEST_NAME" > "$(STATE_FILE)"; \

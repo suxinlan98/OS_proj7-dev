@@ -1,6 +1,8 @@
 K=kernel
 U=user
 ARCH ?= riscv
+BUILD ?= ../build/$(ARCH)
+HOST_BUILD ?= ../build/host
 
 COMMON_OBJS = \
   $K/console.o \
@@ -69,17 +71,13 @@ else
 $(error unsupported ARCH=$(ARCH))
 endif
 
-OBJS = $(ARCH_OBJS) $(COMMON_OBJS)
-ARCH_STAMP = .arch-$(ARCH)
-
-$(ARCH_STAMP):
-	rm -f */*.o */*/*.o */*/*/*.o */*.d */*/*.d */*/*/*.d
-	rm -f .arch-*
-	touch $@
-
-$(OBJS): $(ARCH_STAMP)
-
-%.o: $(ARCH_STAMP)
+OBJS = $(addprefix $(BUILD)/, $(ARCH_OBJS) $(COMMON_OBJS))
+KERNEL_OUT = $(BUILD)/$K/kernel
+FSIMG = $(BUILD)/fs.img
+EXT2IMG = $(BUILD)/ext2.img
+FAT32IMG = $(BUILD)/fat32.img
+MKFS = $(HOST_BUILD)/mkfs
+MKFAT32 = $(HOST_BUILD)/mkfat32
 
 # riscv64-unknown-elf- or riscv64-linux-gnu-
 # perhaps in /opt/riscv/bin
@@ -155,128 +153,148 @@ endif
 
 LDFLAGS = -z max-page-size=4096
 
-$K/kernel: $(OBJS) $(KERNEL_LD)
-	$(LD) $(LDFLAGS) -T $(KERNEL_LD) -o $K/kernel $(OBJS) 
-	$(OBJDUMP) -S $K/kernel > $K/kernel.asm
-	$(OBJDUMP) -t $K/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $K/kernel.sym
+.PHONY: kernel/kernel fs.img qemu qemu-gdb clean clean-all print-gdbport check-qemu-version
 
-$K/%.o: $K/%.S
+kernel/kernel: $(KERNEL_OUT)
+
+fs.img: $(FSIMG)
+
+$(KERNEL_OUT): $(OBJS) $(KERNEL_LD)
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -T $(KERNEL_LD) -o $@ $(OBJS)
+	$(OBJDUMP) -S $@ > $(BUILD)/$K/kernel.asm
+	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $(BUILD)/$K/kernel.sym
+
+$(BUILD)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/$K/%.o: $K/%.S
+	@mkdir -p $(dir $@)
 	$(CC) $(ARCH_ASFLAGS) -g -c -o $@ $<
 
 tags: $(OBJS)
 	etags kernel/*.S kernel/*.c
 
-ULIB = $U/ulib.o $U/usys.o $U/printf.o $U/umalloc.o
+ULIB = $(BUILD)/$U/ulib.o $(BUILD)/$U/usys.o $(BUILD)/$U/printf.o $(BUILD)/$U/umalloc.o
 
-$(ULIB): $(ARCH_STAMP)
-
-_%: %.o $(ULIB) $(USER_LD)
+$(BUILD)/$U/_%: $(BUILD)/$U/%.o $(ULIB) $(USER_LD)
+	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -T $(USER_LD) -o $@ $< $(ULIB)
-	$(OBJDUMP) -S $@ > $*.asm
-	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $*.sym
+	$(OBJDUMP) -S $@ > $(BUILD)/$U/$*.asm
+	$(OBJDUMP) -t $@ | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $(BUILD)/$U/$*.sym
 
-$U/usys.S : $U/usys.pl
-	perl $U/usys.pl > $U/usys.S
+$(BUILD)/$U/usys.S: $U/usys.pl
+	@mkdir -p $(dir $@)
+	perl $U/usys.pl > $@
 
-$U/usys.o : $U/usys.S
-	$(CC) $(CFLAGS) -c -o $U/usys.o $U/usys.S
+$(BUILD)/$U/usys.o: $(BUILD)/$U/usys.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-$U/_forktest: $U/forktest.o $(ULIB)
+$(BUILD)/$U/_forktest: $(BUILD)/$U/forktest.o $(ULIB)
 	# forktest has less library code linked in - needs to be small
 	# in order to be able to max out the proc table.
-	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $U/_forktest $U/forktest.o $U/ulib.o $U/usys.o
-	$(OBJDUMP) -S $U/_forktest > $U/forktest.asm
+	@mkdir -p $(dir $@)
+	$(LD) $(LDFLAGS) -N -e main -Ttext 0 -o $@ $(BUILD)/$U/forktest.o $(BUILD)/$U/ulib.o $(BUILD)/$U/usys.o
+	$(OBJDUMP) -S $@ > $(BUILD)/$U/forktest.asm
 
-mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
-	gcc -I. -o mkfs/mkfs mkfs/mkfs.c
+$(MKFS): mkfs/mkfs.c $K/fs.h $K/param.h
+	@mkdir -p $(dir $@)
+	gcc -I. -o $@ mkfs/mkfs.c
 
-mkfs/mkfat32: mkfs/mkfat32.c
-	gcc -Wall -Werror -O -o mkfs/mkfat32 mkfs/mkfat32.c
+$(MKFAT32): mkfs/mkfat32.c
+	@mkdir -p $(dir $@)
+	gcc -Wall -Werror -O -o $@ mkfs/mkfat32.c
 
 # Prevent deletion of intermediate files, e.g. cat.o, after first build, so
 # that disk image changes after first build are persistent until clean.  More
 # details:
 # http://www.gnu.org/software/make/manual/html_node/Chained-Rules.html
-.PRECIOUS: %.o
+.PRECIOUS: $(BUILD)/%.o
 
 UPROGS=\
-	$U/_cat\
-	$U/_echo\
-	$U/_forktest\
-	$U/_grep\
-	$U/_init\
-	$U/_kill\
-	$U/_ln\
-	$U/_ls\
-	$U/_mkdir\
-	$U/_mount\
-	$U/_umount\
-	$U/_umountstress\
-	$U/_rm\
-	$U/_sh\
-	$U/_stressfs\
-	$U/_hello\
-	$U/_test1\
-	$U/_test2\
-	$U/_unlinkopen\
-	$U/_bigfile\
-	$U/_vfsbench\
-	$U/_usertests\
-	$U/_grind\
-	$U/_wc\
-	$U/_zombie\
-	$U/_logstress\
-	$U/_forphan\
-	$U/_dorphan\
+	$(BUILD)/$U/_cat\
+	$(BUILD)/$U/_echo\
+	$(BUILD)/$U/_forktest\
+	$(BUILD)/$U/_grep\
+	$(BUILD)/$U/_init\
+	$(BUILD)/$U/_kill\
+	$(BUILD)/$U/_ln\
+	$(BUILD)/$U/_ls\
+	$(BUILD)/$U/_mkdir\
+	$(BUILD)/$U/_mount\
+	$(BUILD)/$U/_umount\
+	$(BUILD)/$U/_umountstress\
+	$(BUILD)/$U/_rm\
+	$(BUILD)/$U/_sh\
+	$(BUILD)/$U/_stressfs\
+	$(BUILD)/$U/_hello\
+	$(BUILD)/$U/_test1\
+	$(BUILD)/$U/_test2\
+	$(BUILD)/$U/_unlinkopen\
+	$(BUILD)/$U/_bigfile\
+	$(BUILD)/$U/_vfsbench\
+	$(BUILD)/$U/_usertests\
+	$(BUILD)/$U/_grind\
+	$(BUILD)/$U/_wc\
+	$(BUILD)/$U/_zombie\
+	$(BUILD)/$U/_logstress\
+	$(BUILD)/$U/_forphan\
+	$(BUILD)/$U/_dorphan\
 
-EXT2IMG = ext2.img
 EXT2_BLOCKS := $(shell awk '/^#define[[:space:]]+EXT2SIZE/{print $$3}' $K/param.h)
-FAT32IMG = fat32.img
 
 $(EXT2IMG): hello.c $K/param.h
 	@command -v mkfs.ext2 >/dev/null || { echo "missing mkfs.ext2 (install e2fsprogs)"; exit 1; }
 	@command -v debugfs >/dev/null || { echo "missing debugfs (install e2fsprogs)"; exit 1; }
+	@mkdir -p $(dir $@)
 	rm -f $(EXT2IMG)
 	dd if=/dev/zero of=$(EXT2IMG) bs=1024 count=$(EXT2_BLOCKS)
 	mkfs.ext2 -F -q -b 1024 -I 128 -m 0 $(EXT2IMG)
 	debugfs -w -R "write hello.c hello.c" $(EXT2IMG)
 	debugfs -w -R "write hello.c verylongfilename.txt" $(EXT2IMG)
-	dd if=/dev/zero bs=1024 count=1024 of=hostbig.bin 2>/dev/null
-	debugfs -w -R "write hostbig.bin hostbig.bin" $(EXT2IMG)
-	rm -f hostbig.bin
+	dd if=/dev/zero bs=1024 count=1024 of=$(BUILD)/hostbig.bin 2>/dev/null
+	debugfs -w -R "write $(BUILD)/hostbig.bin hostbig.bin" $(EXT2IMG)
+	rm -f $(BUILD)/hostbig.bin
 
-$(FAT32IMG): mkfs/mkfat32 $K/param.h
+$(FAT32IMG): $(MKFAT32) $K/param.h
+	@mkdir -p $(dir $@)
 	rm -f $(FAT32IMG)
-	mkfs/mkfat32 $(FAT32IMG)
+	$(MKFAT32) $(FAT32IMG)
 
-tests/test1: $U/_test1
+$(BUILD)/tests/test1: $(BUILD)/$U/_test1
+	@mkdir -p $(dir $@)
 	ln -sf ../user/_test1 $@
 
-tests/test2: $U/_test2
+$(BUILD)/tests/test2: $(BUILD)/$U/_test2
+	@mkdir -p $(dir $@)
 	ln -sf ../user/_test2 $@
 
-tests/hello: $U/_hello
+$(BUILD)/tests/hello: $(BUILD)/$U/_hello
+	@mkdir -p $(dir $@)
 	ln -sf ../user/_hello $@
 
-fs.img: mkfs/mkfs README hello.c tests/cmds.sh tests/hello.c tests/test1 tests/test2 tests/hello $(UPROGS) $(EXT2IMG) $(FAT32IMG)
-	mkfs/mkfs fs.img README hello.c tests/cmds.sh tests/hello.c tests/test1 tests/test2 tests/hello $(UPROGS)
-	cat $(EXT2IMG) >> fs.img
-	cat $(FAT32IMG) >> fs.img
+$(FSIMG): $(MKFS) README hello.c tests/cmds.sh tests/hello.c $(BUILD)/tests/test1 $(BUILD)/tests/test2 $(BUILD)/tests/hello $(UPROGS) $(EXT2IMG) $(FAT32IMG)
+	@mkdir -p $(dir $@)
+	$(MKFS) $@ README hello.c tests/cmds.sh tests/hello.c $(BUILD)/tests/test1 $(BUILD)/tests/test2 $(BUILD)/tests/hello $(UPROGS)
+	cat $(EXT2IMG) >> $@
+	cat $(FAT32IMG) >> $@
 
--include kernel/*.d kernel/arch/loongarch/*.d user/*.d
+-include $(BUILD)/kernel/*.d $(BUILD)/kernel/arch/loongarch/*.d $(BUILD)/user/*.d
 
-clean: 
+clean:
+	rm -rf $(BUILD)
 	rm -f *.tex *.dvi *.idx *.aux *.log *.ind *.ilg \
 	*/*.o */*/*.o */*/*/*.o */*.d */*/*.d */*/*/*.d \
 	*/*.asm */*/*.asm */*/*/*.asm */*.sym */*/*.sym */*/*/*.sym \
-	$K/kernel fs.img \
-	.arch-* \
-	$(EXT2IMG) \
-	$(FAT32IMG) \
-	mkfs/mkfs mkfs/mkfat32 .gdbinit \
+	$K/kernel fs.img ext2.img fat32.img .arch-* .gdbinit \
+	mkfs/mkfs mkfs/mkfat32 \
 	tests/test1 tests/test2 tests/hello \
-        $U/usys.S \
-	$(UPROGS)
+	$U/usys.S $U/_*
+
+clean-all: clean
+	rm -rf ../build
 
 # try to generate a unique GDB port
 GDBPORT = $(shell expr `id -u` % 5000 + 25000)
@@ -289,23 +307,23 @@ CPUS := 3
 endif
 
 ifeq ($(ARCH),loongarch)
-QEMUOPTS = -machine virt -kernel $K/kernel -m 1G -smp $(CPUS) -nographic -no-reboot -net none
-QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
+QEMUOPTS = -machine virt -kernel $(KERNEL_OUT) -m 1G -smp $(CPUS) -nographic -no-reboot -net none
+QEMUOPTS += -drive file=$(FSIMG),if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-pci,drive=x0,disable-legacy=on,vectors=0
 else
-QEMUOPTS = -machine virt -bios none -kernel $K/kernel -m 128M -smp $(CPUS) -nographic
+QEMUOPTS = -machine virt -bios none -kernel $(KERNEL_OUT) -m 128M -smp $(CPUS) -nographic
 QEMUOPTS += -global virtio-mmio.force-legacy=false
-QEMUOPTS += -drive file=fs.img,if=none,format=raw,id=x0
+QEMUOPTS += -drive file=$(FSIMG),if=none,format=raw,id=x0
 QEMUOPTS += -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 endif
 
-qemu: check-qemu-version $K/kernel fs.img
+qemu: check-qemu-version $(KERNEL_OUT) $(FSIMG)
 	$(QEMU) $(QEMUOPTS)
 
 .gdbinit: .gdbinit.tmpl-riscv
 	sed "s/:1234/:$(GDBPORT)/" < $^ > $@
 
-qemu-gdb: $K/kernel .gdbinit fs.img
+qemu-gdb: $(KERNEL_OUT) .gdbinit $(FSIMG)
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
 

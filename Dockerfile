@@ -32,11 +32,8 @@ COPY Makefile ./
 COPY src/ src/
 COPY tests/ tests/
 
-# 预构建：LoongArch64 内核 + 默认 RISC-V 内核与 fs.img（含 ext2/fat32 镜像）。
-# 跨架构构建之间 make clean，最终停留在 RISC-V 就绪状态，进容器即可 make qemu。
-RUN make -C src clean \
-    && make -C src ARCH=loongarch kernel/kernel \
-    && make -C src clean \
+# 预构建：LoongArch64 与 RISC-V 双架构内核及 fs.img（产物隔离于 build/<arch>/，互不覆盖）。
+RUN make -C src ARCH=loongarch kernel/kernel fs.img \
     && make -C src ARCH=riscv kernel/kernel fs.img
 
 CMD ["bash"]

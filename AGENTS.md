@@ -4,11 +4,11 @@
 
 Run the narrowest verification tier that matches the change:
 
-- **Tier 0 (every code edit)**: Compile both targets serially via `make -C src ARCH=riscv kernel/kernel && make -C src ARCH=loongarch kernel/kernel`, and run `python3 .github/scripts/check_repo.py` (run `bash tests/check_env.sh` if toolchain setup changed).
+- **Tier 0 (every code edit)**: Compile both targets via `make -C src ARCH=riscv kernel/kernel && make -C src ARCH=loongarch kernel/kernel`, and run `python3 .github/scripts/check_repo.py` (run `bash tests/check_env.sh` if toolchain setup changed).
 - **Tier 1 (subsystem or feature change)**: Run the matching focused QEMU suite on **both** architectures serially (`make <suite> && make run`, then `make loongarch_<suite> && make run`; note baseline targets are `test_baseline` and `loongarch_baseline`; other suites: `public_vfs`, `ext2`, `fat32`, `error`, `semantics`, `persist`, `smp`, `mount_lifecycle`, `remount_io`, `mount_storm`). For changes strictly confined to one architecture's HAL, you may iterate on that architecture first, then verify both before finishing.
 - **Tier 2 (pre-PR or milestone only)**: Full dual-architecture regression via `make verify-all`, plus `python3 test-xv6.py crash` inside `src/` when modifying logging or crash recovery.
 
-If only docs or comments changed, skip Tier 1 and Tier 2 unless requested. `src/Makefile` shares object paths via `.arch-$(ARCH)`, so build and test RISC-V and LoongArch serially unless outputs are isolated per architecture.
+If only docs or comments changed, skip Tier 1 and Tier 2 unless requested. Build outputs are isolated per architecture under `build/<arch>/` (`build/riscv/`, `build/loongarch/`), while root `make <suite> && make run` shares `.last-test`/`.last-test-arch`, so run top-level test suites serially.
 
 ## Repo Invariants
 
@@ -32,7 +32,7 @@ If only docs or comments changed, skip Tier 1 and Tier 2 unless requested. `src/
 - **Credentials & prompt hygiene**: Never commit `.env*`, private keys, API keys, passwords, or tokens anywhere in the repository, including `docs/AI_prompts/` records and logs.
 - **Privilege & memory boundaries**: Never bypass user/kernel permission checks, `TRAPFRAME`/`MAXVA` address bounds, DMA bus-master quiescence, or privileged RPC authorization to make a test pass.
 - **Destructive commands**: Require explicit user confirmation before destructive operations (`git reset --hard`, `git push --force`, `rm -rf` on tracked or persistent state, or wiping persistent test disk images during failure investigation).
-- **Protected & generated files**: Never hand-edit or commit generated build outputs (`*.img`, `*.asm`, `*.sym`, `src/user/usys.S`, `src/.arch-*`) or alter inherited baseline test expectations to hide failures; regenerate build artifacts via `make`.
+- **Protected & generated files**: Never hand-edit or commit generated build outputs (`build/`, `*.img`, `*.asm`, `*.sym`, `src/user/usys.S`, `src/.arch-*`) or alter inherited baseline test expectations to hide failures; regenerate build artifacts via `make`.
 
 ## Documentation Orientation
 

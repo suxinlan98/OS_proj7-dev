@@ -26,7 +26,7 @@ echo "[full_usertests] building $ARCH kernel and fs.img"
 (
   cd "$XV6_DIR" || exit 1
   make ARCH="$ARCH" clean
-  rm -f fs.img ext2.img fat32.img
+  rm -f "../build/$ARCH/fs.img" "../build/$ARCH/ext2.img" "../build/$ARCH/fat32.img"
   make ARCH="$ARCH" kernel/kernel fs.img
 ) > "$BUILD_LOG" 2>&1 || {
   echo "[full_usertests] build failed (see $BUILD_LOG)"

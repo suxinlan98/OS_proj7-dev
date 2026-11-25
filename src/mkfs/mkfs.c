@@ -135,10 +135,16 @@ main(int argc, char *argv[])
   iappend(rootino, &de, sizeof(de));
 
   for(i = 2; i < argc; i++){
-    // get rid of "user/"
+    // Strip leading build/user directory prefix (e.g. "user/_cat" or
+    // "../build/riscv/user/_cat") and preserve "tests/<name>" subpaths.
     char *shortname;
+    char *p;
     if(strncmp(argv[i], "user/", 5) == 0)
       shortname = argv[i] + 5;
+    else if((p = strstr(argv[i], "/user/")) != 0)
+      shortname = p + 6;
+    else if((p = strstr(argv[i], "/tests/")) != 0)
+      shortname = p + 1;
     else
       shortname = argv[i];
     

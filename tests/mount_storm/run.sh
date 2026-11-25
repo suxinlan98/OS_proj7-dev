@@ -18,7 +18,7 @@ RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 
-if [ ! -f "$XV6_DIR/fs.img" ]; then
+if [ ! -f "$ROOT_DIR/build/$TEST_ARCH/fs.img" ]; then
   echo "[mount_storm] fs.img not found"
   echo "Use: make mount_storm"
   exit 1

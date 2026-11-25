@@ -50,7 +50,7 @@ docker run --rm -it xv6-microkernel
 
 ## 双架构构建与运行
 
-> `src/Makefile` 默认使用 `src/.arch-$(ARCH)` 标记当前目标架构；在同一工作树下切换架构构建与运行时请串行执行。
+> 编译产物按架构隔离输出至根目录 `build/riscv/` 与 `build/loongarch/`（含 `kernel/kernel`、`user/` 与 `fs.img`），双架构互不覆盖。`make -C src ARCH=<arch> kernel/kernel` 与 `fs.img` 仍保留兼容入口目标。
 
 ### RISC-V 64（默认）
 
