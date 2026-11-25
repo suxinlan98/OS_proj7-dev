@@ -27,15 +27,20 @@ int test_copy_file(const char *src, const char *dst) {
 
   int i;
   char buf[LEN];
-  do {
-    i = read(inf, buf, LEN);
+  while ((i = read(inf, buf, LEN)) > 0) {
     if (write(outf, buf, i) != i) {
-      fprintf(2, "test1: write error\n");
+      fprintf(2, "test1: error write\n");
       close(inf);
       close(outf);
       return 4;
     }
-  } while (i);
+  }
+  if (i < 0) {
+    fprintf(2, "test1: error read\n");
+    close(inf);
+    close(outf);
+    return 5;
+  }
   close(inf);
   close(outf);
 
@@ -55,10 +60,12 @@ static const char * fnames[][2] = {
 #define NUM_TESTS NELEM(fnames)
 
 int main(int argc, char *argv[]) {
+  int fail = 0;
   printf("\n--------- %s: begin... -----------------{\n", argv[0]);
   for (int i=0; i<NUM_TESTS; i++) {
-    test_copy_file(fnames[i][0], fnames[i][1]);
+    if (test_copy_file(fnames[i][0], fnames[i][1]) != 0)
+      fail = 1;
   }
   printf("----------- %s: finished -----------------}\n", argv[0]);
-  return 0;
+  return fail;
 }

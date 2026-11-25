@@ -13,7 +13,7 @@ if [ "$TEST_ARCH" != "riscv" ]; then
   CASE_NAME="${TEST_ARCH}_public_vfs"
 fi
 RAW_LOG="$LOG_DIR/qemu-public-vfs$LOG_SUFFIX.log"
-RESULT_LOG="$LOG_DIR/result.log"
+RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -29,13 +29,15 @@ python3 "$ROOT_DIR/tests/runner/run_qemu_case.py" \
   --xv6-dir "$XV6_DIR" \
   --commands "$SCRIPT_DIR/cmds.sh" \
   --log "$RAW_LOG" \
+  --prompt-wait \
+  --cmd-timeout 180 \
   --expect "mount: ext2 on /mnt dev 2" \
   --expect "test_copy_file(/mnt/hello.c,/hello.c): succeed" \
   --expect "test_copy_file(/mnt/hello.c,/tests/hello.c): succeed" \
   --expect "test_copy_file(/hello.c,/mnt/hello.c): succeed" \
   --expect "test_copy_file(/tests/hello.c,/mnt/hello.c): succeed" \
   --expect "test_cross_fs_copy(): succeed" \
-  --expect "PUBLIC_VFS_DONE" \
+  --expect-count "PUBLIC_VFS_DONE" 2 \
   --reject "panic:" \
   --reject "kerneltrap" \
   --reject "mount: failed" \

@@ -76,28 +76,44 @@ pipeclose(struct pipe *pi, int writable)
 int
 pipewrite(struct pipe *pi, uint64 addr, int n)
 {
+  char kbuf[64];
   int i = 0;
   struct proc *pr = myproc();
 
-  acquire(&pi->lock);
   while(i < n){
-    if(pi->readopen == 0 || killed(pr)){
-      release(&pi->lock);
-      return -1;
+    int m = n - i;
+    int page_rem = PGSIZE - ((addr + i) % PGSIZE);
+    if(m > (int)sizeof(kbuf))
+      m = sizeof(kbuf);
+    if(m > page_rem)
+      m = page_rem;
+
+    if(copyin(pr->pagetable, kbuf, addr + i, m) == -1){
+      if(i == 0)
+        return -1;
+      break;
     }
-    if(pi->nwrite == pi->nread + PIPESIZE){ //DOC: pipewrite-full
-      wakeup(&pi->nread);
-      sleep(&pi->nwrite, &pi->lock);
-    } else {
-      char ch;
-      if(copyin(pr->pagetable, &ch, addr + i, 1) == -1)
-        break;
-      pi->data[pi->nwrite++ % PIPESIZE] = ch;
+
+    acquire(&pi->lock);
+    for(int j = 0; j < m; j++){
+      while(pi->nwrite == pi->nread + PIPESIZE){ //DOC: pipewrite-full
+        if(pi->readopen == 0 || killed(pr)){
+          release(&pi->lock);
+          return -1;
+        }
+        wakeup(&pi->nread);
+        sleep(&pi->nwrite, &pi->lock);
+      }
+      if(pi->readopen == 0 || killed(pr)){
+        release(&pi->lock);
+        return -1;
+      }
+      pi->data[pi->nwrite++ % PIPESIZE] = kbuf[j];
       i++;
     }
+    wakeup(&pi->nread);
+    release(&pi->lock);
   }
-  wakeup(&pi->nread);
-  release(&pi->lock);
 
   return i;
 }
@@ -105,9 +121,9 @@ pipewrite(struct pipe *pi, uint64 addr, int n)
 int
 piperead(struct pipe *pi, uint64 addr, int n)
 {
-  int i;
+  char kbuf[64];
+  int tot = 0;
   struct proc *pr = myproc();
-  char ch;
 
   acquire(&pi->lock);
   while(pi->nread == pi->nwrite && pi->writeopen){  //DOC: pipe-empty
@@ -117,14 +133,37 @@ piperead(struct pipe *pi, uint64 addr, int n)
     }
     sleep(&pi->nread, &pi->lock); //DOC: piperead-sleep
   }
-  for(i = 0; i < n; i++){  //DOC: piperead-copy
-    if(pi->nread == pi->nwrite)
-      break;
-    ch = pi->data[pi->nread++ % PIPESIZE];
-    if(copyout(pr->pagetable, addr + i, &ch, 1) == -1)
-      break;
+
+  while(tot < n && pi->nread != pi->nwrite){  //DOC: piperead-copy
+    int m = n - tot;
+    int avail = pi->nwrite - pi->nread;
+    int page_rem = PGSIZE - ((addr + tot) % PGSIZE);
+    if(m > (int)sizeof(kbuf))
+      m = sizeof(kbuf);
+    if(m > avail)
+      m = avail;
+    if(m > page_rem)
+      m = page_rem;
+
+    uint start = pi->nread;
+    for(int j = 0; j < m; j++)
+      kbuf[j] = pi->data[(start + j) % PIPESIZE];
+    pi->nread += m;
+    release(&pi->lock);
+
+    if(copyout(pr->pagetable, addr + tot, kbuf, m) == -1){
+      acquire(&pi->lock);
+      if(pi->nread == start + m && pi->nwrite - start <= PIPESIZE)
+        pi->nread = start;
+      wakeup(&pi->nwrite);
+      release(&pi->lock);
+      return tot > 0 ? tot : -1;
+    }
+
+    tot += m;
+    acquire(&pi->lock);
   }
   wakeup(&pi->nwrite);  //DOC: piperead-wakeup
   release(&pi->lock);
-  return i;
+  return tot;
 }

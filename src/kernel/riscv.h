@@ -82,6 +82,7 @@ w_sip(uint64 x)
 // Supervisor Interrupt Enable
 #define SIE_SEIE (1L << 9) // external
 #define SIE_STIE (1L << 5) // timer
+#define SIE_SSIE (1L << 1) // software
 static inline uint64
 r_sie()
 {
@@ -98,6 +99,7 @@ w_sie(uint64 x)
 
 // Machine-mode Interrupt Enable
 #define MIE_STIE (1L << 5)  // supervisor timer
+#define MIE_MSIE (1L << 3)  // machine software
 static inline uint64
 r_mie()
 {
@@ -110,6 +112,18 @@ static inline void
 w_mie(uint64 x)
 {
   asm volatile("csrw mie, %0" : : "r" (x));
+}
+
+static inline void
+w_mtvec(uint64 x)
+{
+  asm volatile("csrw mtvec, %0" : : "r" (x));
+}
+
+static inline void
+w_mscratch(uint64 x)
+{
+  asm volatile("csrw mscratch, %0" : : "r" (x));
 }
 
 // supervisor exception program counter, holds the
@@ -348,6 +362,12 @@ sfence_vma()
 }
 
 static inline void
+sfence_vma_va(uint64 va)
+{
+  asm volatile("sfence.vma %0, zero" : : "r" (va) : "memory");
+}
+
+static inline void
 cpu_idle()
 {
   asm volatile("wfi");
@@ -369,6 +389,7 @@ typedef uint64 *pagetable_t; // 512 PTEs
 #define PTE_W (1L << 2)
 #define PTE_X (1L << 3)
 #define PTE_U (1L << 4) // user can access
+#define PTE_NX 0UL      // RISC-V is non-executable unless PTE_X is set
 
 // shift a physical address to the right place for a PTE.
 #define PA2PTE(pa) ((((uint64)pa) >> 12) << 10)

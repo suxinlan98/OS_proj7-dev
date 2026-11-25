@@ -192,7 +192,8 @@ ext2_read_dinode(struct ext2_fs *fs, uint inum, struct ext2_dinode *di)
 
   index = inum - 1;
   off = ext2_block_offset(fs, fs->gd.bg_inode_table) + index * fs->inode_size;
-  return block_read_bytes(fs->dev, off, (uchar*)di, sizeof(*di));
+  return block_read_bytes(fs->dev, off, (uchar*)di, sizeof(*di)) ==
+         sizeof(*di) ? 0 : -1;
 }
 
 static int
@@ -205,7 +206,8 @@ ext2_write_dinode(struct ext2_fs *fs, uint inum, struct ext2_dinode *di)
 
   index = inum - 1;
   off = ext2_block_offset(fs, fs->gd.bg_inode_table) + index * fs->inode_size;
-  return block_write_bytes(fs->dev, off, (uchar*)di, sizeof(*di));
+  return block_write_bytes(fs->dev, off, (uchar*)di, sizeof(*di)) ==
+         sizeof(*di) ? 0 : -1;
 }
 
 static short
@@ -357,7 +359,7 @@ static int
 ext2_write_super(struct ext2_fs *fs)
 {
   return block_write_bytes(fs->dev, EXT2_SUPER_OFFSET, (uchar*)&fs->sb,
-                           sizeof(fs->sb));
+                           sizeof(fs->sb)) == sizeof(fs->sb) ? 0 : -1;
 }
 
 static int
@@ -366,7 +368,8 @@ ext2_write_group(struct ext2_fs *fs)
   uint gd_block = fs->sb.s_first_data_block + 1;
 
   return block_write_bytes(fs->dev, ext2_block_offset(fs, gd_block),
-                           (uchar*)&fs->gd, sizeof(fs->gd));
+                           (uchar*)&fs->gd, sizeof(fs->gd)) ==
+         sizeof(fs->gd) ? 0 : -1;
 }
 
 static int
@@ -398,10 +401,12 @@ ext2_alloc_block(struct ext2_fs *fs)
   bp = bread(fs->dev, fs->gd.bg_block_bitmap);
   bitmap = (uchar*)bp->data;
 
-  // Never allocate beyond the last block that exists in the image.
+  // Never allocate beyond the last block that exists in the image
+  // or beyond the single-block bitmap capacity.
   start = fs->sb.s_first_data_block;
   nblocks = ext2_min(fs->sb.s_blocks_per_group,
                      fs->sb.s_blocks_count - start);
+  nblocks = ext2_min(nblocks, fs->block_size * 8);
   for(i = 0; i < nblocks; i++){
     if(!ext2_test_bit(bitmap, i)){
       ext2_set_bit(bitmap, i);
@@ -436,12 +441,14 @@ ext2_free_block(struct ext2_fs *fs, uint blockno)
   uint bit;
   int freed = 0;
 
-  if(blockno == 0)
+  if(blockno < fs->sb.s_first_data_block || blockno >= fs->sb.s_blocks_count)
+    return;
+  bit = blockno - fs->sb.s_first_data_block;
+  if(bit >= fs->block_size * 8)
     return;
   acquiresleep(&fs->lock);
   bp = bread(fs->dev, fs->gd.bg_block_bitmap);
   bitmap = (uchar*)bp->data;
-  bit = blockno - fs->sb.s_first_data_block;
   if(ext2_test_bit(bitmap, bit)){
     ext2_clear_bit(bitmap, bit);
     bwrite(bp);
@@ -472,8 +479,10 @@ ext2_alloc_inode(struct ext2_fs *fs)
   if(first == 0)
     first = 11;
 
-  // Never allocate beyond the last inode that exists in the image.
+  // Never allocate beyond the last inode that exists in the image
+  // or beyond the single-block bitmap capacity.
   ninodes = ext2_min(fs->sb.s_inodes_per_group, fs->sb.s_inodes_count);
+  ninodes = ext2_min(ninodes, fs->block_size * 8);
   for(i = first - 1; i < ninodes; i++){
     if(!ext2_test_bit(bitmap, i)){
       ext2_set_bit(bitmap, i);
@@ -505,12 +514,14 @@ ext2_free_inode(struct ext2_fs *fs, uint inum)
   uint bit;
   int freed = 0;
 
-  if(inum == 0)
+  if(inum == 0 || inum > fs->sb.s_inodes_count)
+    return;
+  bit = inum - 1;
+  if(bit >= fs->block_size * 8)
     return;
   acquiresleep(&fs->lock);
   bp = bread(fs->dev, fs->gd.bg_inode_bitmap);
   bitmap = (uchar*)bp->data;
-  bit = inum - 1;
   if(ext2_test_bit(bitmap, bit)){
     ext2_clear_bit(bitmap, bit);
     bwrite(bp);
@@ -630,52 +641,6 @@ ext2_bmap(struct inode *ip, uint bn, int alloc)
   return blockno;
 }
 
-static struct inode*
-ext2_lookup(struct inode *dp, char *name)
-{
-  struct ext2_fs *fs = (struct ext2_fs*)dp->mnt->fs_private;
-  uchar buf[BSIZE];
-  struct ext2_dirent *de;
-  uint off, bno, pos, alias;
-
-  if(dp->type != T_DIR)
-    return 0;
-
-  // Path components are truncated to DIRSIZ characters by the namei
-  // layer, so a query of exactly DIRSIZ chars may be the truncation of
-  // a longer on-disk name.  Remember the first such alias candidate;
-  // an exact short match always wins.
-  alias = 0;
-  for(off = 0; off < dp->size; off += fs->block_size){
-    bno = ext2_bmap(dp, off / fs->block_size, 0);
-    if(bno == 0)
-      continue;
-    if(block_read_bytes(fs->dev, ext2_block_offset(fs, bno),
-                        buf, fs->block_size) < 0)
-      return 0;
-    for(pos = 0; pos < fs->block_size; ){
-      de = (struct ext2_dirent*)(buf + pos);
-      if(!ext2_dirent_valid(de, pos, fs->block_size))
-        break;
-      if(de->inode != 0){
-        if(de->name_len <= DIRSIZ){
-          if(ext2_nameeq(name, de->name, de->name_len))
-            return ext2_iget(dp->mnt, de->inode);
-        } else if(alias == 0 && ext2_namelen(name) == DIRSIZ &&
-                  memcmp(name, de->name, DIRSIZ) == 0){
-          alias = de->inode;
-        }
-      }
-      pos += de->rec_len;
-    }
-  }
-
-  if(alias)
-    return ext2_iget(dp->mnt, alias);
-
-  return 0;
-}
-
 static int
 ext2_find_dirent(struct inode *dp, char *name, struct ext2_dirent *out,
                  uint *entry_off)
@@ -684,36 +649,69 @@ ext2_find_dirent(struct inode *dp, char *name, struct ext2_dirent *out,
   uchar buf[BSIZE];
   struct ext2_dirent *de;
   uint off, bno, pos;
+  uint alias_off = 0;
+  int has_alias = 0;
+  int qlen = ext2_namelen(name);
 
   if(dp->type != T_DIR)
     return -1;
 
+  // Path components are truncated to DIRSIZ characters by the namei
+  // layer, so a query of exactly DIRSIZ chars may match a longer
+  // on-disk name.  Remember the first alias candidate; an exact
+  // short-name match always wins.
   for(off = 0; off < dp->size; off += fs->block_size){
     bno = ext2_bmap(dp, off / fs->block_size, 0);
     if(bno == 0)
       continue;
     if(block_read_bytes(fs->dev, ext2_block_offset(fs, bno),
-                        buf, fs->block_size) < 0)
+                        buf, fs->block_size) != fs->block_size)
       return -1;
     for(pos = 0; pos < fs->block_size; ){
       de = (struct ext2_dirent*)(buf + pos);
       if(!ext2_dirent_valid(de, pos, fs->block_size))
         break;
-      if(de->inode != 0 && de->name_len <= DIRSIZ &&
-         ext2_nameeq(name, de->name, de->name_len)){
-        if(out){
-          memset(out, 0, sizeof(*out));
-          memmove(out, de, ext2_min(de->rec_len, sizeof(*out)));
+      if(de->inode != 0){
+        if(de->name_len <= DIRSIZ){
+          if(ext2_nameeq(name, de->name, de->name_len)){
+            if(out){
+              memset(out, 0, sizeof(*out));
+              memmove(out, de, ext2_min(de->rec_len, sizeof(*out)));
+            }
+            if(entry_off)
+              *entry_off = ext2_block_offset(fs, bno) + pos;
+            return 0;
+          }
+        } else if(!has_alias && qlen == DIRSIZ &&
+                  memcmp(name, de->name, DIRSIZ) == 0){
+          has_alias = 1;
+          alias_off = ext2_block_offset(fs, bno) + pos;
+          if(out){
+            memset(out, 0, sizeof(*out));
+            memmove(out, de, ext2_min(de->rec_len, sizeof(*out)));
+          }
         }
-        if(entry_off)
-          *entry_off = ext2_block_offset(fs, bno) + pos;
-        return 0;
       }
       pos += de->rec_len;
     }
   }
 
+  if(has_alias){
+    if(entry_off)
+      *entry_off = alias_off;
+    return 0;
+  }
   return -1;
+}
+
+static struct inode*
+ext2_lookup(struct inode *dp, char *name)
+{
+  struct ext2_dirent de;
+
+  if(ext2_find_dirent(dp, name, &de, 0) < 0)
+    return 0;
+  return ext2_iget(dp->mnt, de.inode);
 }
 
 static int
@@ -830,7 +828,8 @@ ext2_dir_add(struct inode *dp, char *name, uint inum, uchar file_type)
   bwrite(bp);
   brelse(bp);
   dp->size += fs->block_size;
-  ext2_sync_inode(dp);
+  if(ext2_sync_inode(dp) < 0)
+    return -1;
   return 0;
 }
 
@@ -920,10 +919,31 @@ ext2_create(struct inode *dp, char *name, short type, short major, short minor)
 
   if(type == T_DIR){
     dp->nlink++;
-    ext2_sync_inode(dp);
+    if(ext2_sync_inode(dp) < 0){
+      dp->nlink--;
+      uint entry_off;
+      if(ext2_find_dirent(dp, name, 0, &entry_off) == 0)
+        ext2_remove_dirent(fs, entry_off);
+      ext2_free_block(fs, bno);
+      ext2_free_inode(fs, inum);
+      return 0;
+    }
   }
 
-  return ext2_iget(dp->mnt, inum);
+  struct inode *ip = ext2_iget(dp->mnt, inum);
+  if(ip == 0){
+    uint entry_off;
+    if(ext2_find_dirent(dp, name, 0, &entry_off) == 0)
+      ext2_remove_dirent(fs, entry_off);
+    if(type == T_DIR){
+      dp->nlink--;
+      ext2_sync_inode(dp);
+      ext2_free_block(fs, bno);
+    }
+    ext2_free_inode(fs, inum);
+    return 0;
+  }
+  return ip;
 }
 
 static int
@@ -960,7 +980,11 @@ ext2_unlink(struct inode *dp, char *name)
 
   if(ip->type == T_DIR){
     dp->nlink--;
-    ext2_sync_inode(dp);
+    if(ext2_sync_inode(dp) < 0){
+      dp->nlink++;
+      iunlockput(ip);
+      return -1;
+    }
     ip->nlink = 0;
   } else if(ip->nlink > 0){
     ip->nlink--;
@@ -968,7 +992,10 @@ ext2_unlink(struct inode *dp, char *name)
 
   // Only drop the link count here. Blocks and the inode itself are
   // released by iput() once the last open reference goes away.
-  ext2_sync_inode(ip);
+  if(ext2_sync_inode(ip) < 0){
+    iunlockput(ip);
+    return -1;
+  }
   iunlockput(ip);
   return 0;
 }
@@ -1074,30 +1101,38 @@ ext2_writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 {
   struct ext2_fs *fs = (struct ext2_fs*)ip->mnt->fs_private;
   uchar buf[BSIZE];
+  struct buf *bp;
   uint tot, m, bno;
+  int err = 0;
 
-  if(off + n < off)
+  if(ip->type != T_FILE || off > ip->size || off + n < off)
     return -1;
 
   for(tot = 0; tot < n; tot += m, off += m, src += m){
+    m = ext2_min(n - tot, fs->block_size - off % fs->block_size);
+    // Copy from user space before allocating a disk block so an
+    // invalid user pointer never leaks blocks or performs wasted I/O.
+    if(either_copyin(buf, user_src, src, m) < 0){
+      err = 1;
+      break;
+    }
     bno = ext2_bmap(ip, off / fs->block_size, 1);
     if(bno == 0)
       break;
-    if(block_read_bytes(fs->dev, ext2_block_offset(fs, bno),
-                        buf, fs->block_size) < 0)
-      return -1;
-    m = ext2_min(n - tot, fs->block_size - off % fs->block_size);
-    if(either_copyin(buf + off % fs->block_size, user_src, src, m) < 0)
-      return -1;
-    if(block_write_bytes(fs->dev, ext2_block_offset(fs, bno),
-                         buf, fs->block_size) < 0)
-      return -1;
+    bp = bread(fs->dev, bno);
+    memmove(bp->data + off % fs->block_size, buf, m);
+    bwrite(bp);
+    brelse(bp);
   }
 
   if(off > ip->size)
     ip->size = off;
-  ext2_sync_inode(ip);
-
+  if(tot > 0 || !err){
+    if(ext2_sync_inode(ip) < 0)
+      return -1;
+  }
+  if(err)
+    return -1;
   return tot;
 }
 
@@ -1191,6 +1226,67 @@ ext2_itrunc(struct inode *ip)
 }
 
 static int
+ext2_validate_super(const struct ext2_super *sb, uint *block_size_out,
+                    uint *inode_size_out)
+{
+  uint block_size, inode_size;
+
+  if(sb->s_magic != EXT2_SUPER_MAGIC)
+    return -1;
+  if(sb->s_log_block_size > 2)
+    return -1;
+  block_size = 1024U << sb->s_log_block_size;
+  if(block_size != BSIZE)
+    return -1;
+  if(sb->s_blocks_count <= sb->s_first_data_block ||
+     sb->s_blocks_count > EXT2SIZE)
+    return -1;
+  if(sb->s_blocks_per_group == 0 || sb->s_inodes_per_group == 0 ||
+     sb->s_inodes_count == 0)
+    return -1;
+  if(sb->s_blocks_count - sb->s_first_data_block > sb->s_blocks_per_group ||
+     sb->s_inodes_count > sb->s_inodes_per_group)
+    return -1;
+  if(sb->s_blocks_per_group > block_size * 8 ||
+     sb->s_inodes_per_group > block_size * 8)
+    return -1;
+
+  inode_size = sb->s_inode_size;
+  if(inode_size == 0)
+    inode_size = 128;
+  if(inode_size < sizeof(struct ext2_dinode) || inode_size > block_size ||
+     (inode_size & (inode_size - 1)) != 0)
+    return -1;
+
+  *block_size_out = block_size;
+  *inode_size_out = inode_size;
+  return 0;
+}
+
+static int
+ext2_validate_group(const struct ext2_super *sb,
+                    const struct ext2_group_desc *gd,
+                    uint block_size, uint inode_size)
+{
+  uint64 itbl_bytes, itbl_blocks;
+
+  if(gd->bg_block_bitmap < sb->s_first_data_block ||
+     gd->bg_block_bitmap >= sb->s_blocks_count)
+    return -1;
+  if(gd->bg_inode_bitmap < sb->s_first_data_block ||
+     gd->bg_inode_bitmap >= sb->s_blocks_count)
+    return -1;
+  if(gd->bg_inode_table < sb->s_first_data_block ||
+     gd->bg_inode_table >= sb->s_blocks_count)
+    return -1;
+  itbl_bytes = (uint64)sb->s_inodes_count * inode_size;
+  itbl_blocks = (itbl_bytes + block_size - 1) / block_size;
+  if((uint64)gd->bg_inode_table + itbl_blocks > sb->s_blocks_count)
+    return -1;
+  return 0;
+}
+
+static int
 ext2_mount(struct mount *mnt)
 {
   struct ext2_super sb;
@@ -1201,27 +1297,18 @@ ext2_mount(struct mount *mnt)
     return -1;
 
   if(block_read_bytes(mnt->dev, EXT2_SUPER_OFFSET, (uchar*)&sb,
-                      sizeof(sb)) < 0)
+                      sizeof(sb)) != sizeof(sb))
     return -1;
-  if(sb.s_magic != EXT2_SUPER_MAGIC)
-    return -1;
-
-  block_size = 1024 << sb.s_log_block_size;
-  if(block_size != BSIZE)
-    return -1;
-  if(sb.s_blocks_count > sb.s_blocks_per_group ||
-     sb.s_inodes_count > sb.s_inodes_per_group)
-    return -1;
-
-  inode_size = sb.s_inode_size;
-  if(inode_size == 0)
-    inode_size = 128;
-  if(inode_size < sizeof(struct ext2_dinode))
+  if(ext2_validate_super(&sb, &block_size, &inode_size) < 0)
     return -1;
 
   gd_block = sb.s_first_data_block + 1;
+  if(gd_block >= sb.s_blocks_count)
+    return -1;
   if(block_read_bytes(mnt->dev, gd_block * block_size, (uchar*)&gd,
-                      sizeof(gd)) < 0)
+                      sizeof(gd)) != sizeof(gd))
+    return -1;
+  if(ext2_validate_group(&sb, &gd, block_size, inode_size) < 0)
     return -1;
 
   memset(&ext2fs, 0, sizeof(ext2fs));

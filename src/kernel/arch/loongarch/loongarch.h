@@ -5,6 +5,12 @@
 
 #define  EXT_INT_EN_SHIFT         48
 
+#define LOONGARCH_IOCSR_IPI_STATUS            0x1000
+#define LOONGARCH_IOCSR_IPI_EN                0x1004
+#define LOONGARCH_IOCSR_IPI_SET               0x1008
+#define LOONGARCH_IOCSR_IPI_CLEAR             0x100c
+#define LOONGARCH_IOCSR_IPI_SEND              0x1040
+
 #define LOONGARCH_IOCSR_EXTIOI_EN_BASE		    0x1600
 #define LOONGARCH_IOCSR_EXTIOI_ISR_BASE		    0x1800
 #define LOONGARCH_IOCSR_EXTIOI_MAP_BASE       0x14c0
@@ -84,8 +90,10 @@ r_csr_estat()
 
 #define CSR_ECFG_VS_SHIFT  16 
 #define CSR_ECFG_LIE_TI_SHIFT  11
+#define CSR_ECFG_LIE_IPI_SHIFT 12
 #define HWI_VEC  0x3fcU
-#define TI_VEC  (0x1 << CSR_ECFG_LIE_TI_SHIFT)
+#define TI_VEC  (0x1U << CSR_ECFG_LIE_TI_SHIFT)
+#define IPI_VEC (0x1U << CSR_ECFG_LIE_IPI_SHIFT)
 
 static inline uint32
 r_csr_ecfg()
@@ -288,6 +296,12 @@ static inline void
 cpu_idle()
 {
   asm volatile("idle 0");
+}
+
+static inline void
+invtlb_va(uint64 va)
+{
+  asm volatile("invtlb 0x5, $zero, %0" : : "r" (va) : "memory");
 }
 
 #define PGSIZE 4096 // bytes per page

@@ -13,7 +13,7 @@ if [ "$TEST_ARCH" != "riscv" ]; then
   CASE_NAME="${TEST_ARCH}_semantics"
 fi
 RAW_LOG="$LOG_DIR/qemu-semantics$LOG_SUFFIX.log"
-RESULT_LOG="$LOG_DIR/result.log"
+RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -29,22 +29,24 @@ python3 "$ROOT_DIR/tests/runner/run_qemu_case.py" \
   --xv6-dir "$XV6_DIR" \
   --commands "$SCRIPT_DIR/cmds.sh" \
   --log "$RAW_LOG" \
+  --prompt-wait \
+  --cmd-timeout 180 \
   --expect "mount: ext2 on /mnt dev 2" \
   --expect "mount: fat32 on /fat dev 3" \
   --expect-count "EXT2_EXEC_OK" 2 \
   --expect-count "FAT32_EXEC_OK" 2 \
-  --expect "VFS_PARENT_OK" \
-  --expect "Hello, world" \
+  --expect-count "VFS_PARENT_OK" 3 \
+  --expect-count "Hello, world" 2 \
   --expect "link /fat/a.txt /fat/b.txt: failed" \
-  --expect "unlinkopen: ok" \
+  --expect-count "unlinkopen: ok" 2 \
   --expect-count "umount: busy or invalid" 2 \
   --expect "umount: /mnt" \
   --expect "umount: /fat" \
-  --expect "XV6_MNT_BASE" \
-  --expect "XV6_FAT_BASE" \
-  --expect "UMOUNT_SEMANTICS_OK" \
-  --expect "FAT32_REMOUNT_OK" \
-  --expect "SEMANTICS_DONE" \
+  --expect-count "XV6_MNT_BASE" 2 \
+  --expect-count "XV6_FAT_BASE" 2 \
+  --expect-count "UMOUNT_SEMANTICS_OK" 2 \
+  --expect-count "FAT32_REMOUNT_OK" 2 \
+  --expect-count "SEMANTICS_DONE" 2 \
   --reject "panic:" \
   --reject "kerneltrap" \
   --reject "mount: failed" \

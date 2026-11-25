@@ -16,34 +16,71 @@
 int
 main(int argc, char *argv[])
 {
-  int fd, i;
-  char path[] = "stressfs0";
+  int fd, i, j, pid, has_child = 0, st = 0;
+  char path[] = "sfs0";
   char data[512];
 
   printf("stressfs starting\n");
   memset(data, 'a', sizeof(data));
 
-  for(i = 0; i < 4; i++)
-    if(fork() > 0)
+  for(i = 0; i < 4; i++){
+    pid = fork();
+    if(pid < 0){
+      printf("stressfs: FAIL fork\n");
+      exit(1);
+    }
+    if(pid > 0){
+      has_child = 1;
       break;
+    }
+  }
 
   printf("write %d\n", i);
 
-  path[8] += i;
-  fd = open(path, O_CREATE | O_RDWR);
-  for(i = 0; i < 20; i++)
-//    printf(fd, "%d\n", i);
-    write(fd, data, sizeof(data));
+  path[3] += i;
+  fd = open(path, O_CREATE | O_RDWR | O_TRUNC);
+  if(fd < 0){
+    printf("stressfs: FAIL open write %s\n", path);
+    exit(1);
+  }
+  for(j = 0; j < 20; j++){
+    if(write(fd, data, sizeof(data)) != sizeof(data)){
+      printf("stressfs: FAIL write %s\n", path);
+      close(fd);
+      exit(1);
+    }
+  }
   close(fd);
 
   printf("read\n");
 
   fd = open(path, O_RDONLY);
-  for (i = 0; i < 20; i++)
-    read(fd, data, sizeof(data));
+  if(fd < 0){
+    printf("stressfs: FAIL open read %s\n", path);
+    exit(1);
+  }
+  for(j = 0; j < 20; j++){
+    if(read(fd, data, sizeof(data)) != sizeof(data)){
+      printf("stressfs: FAIL read %s\n", path);
+      close(fd);
+      exit(1);
+    }
+    for(int k = 0; k < (int)sizeof(data); k++){
+      if(data[k] != 'a'){
+        printf("stressfs: FAIL data mismatch in %s\n", path);
+        close(fd);
+        exit(1);
+      }
+    }
+  }
   close(fd);
 
-  wait(0);
+  if(has_child){
+    if(wait(&st) < 0 || st != 0){
+      printf("stressfs: FAIL child status %d\n", st);
+      exit(1);
+    }
+  }
 
   exit(0);
 }

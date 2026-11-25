@@ -53,6 +53,10 @@
 #define UART0 0x10000000L
 #define UART0_IRQ 10
 
+// Core Local Interruptor (CLINT) for M-mode software IPI relay.
+#define CLINT 0x02000000L
+#define CLINT_MSIP(hart) (CLINT + 4*(hart))
+
 // virtio mmio interface
 #define VIRTIO0 0x10001000
 #define VIRTIO0_IRQ 1

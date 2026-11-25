@@ -21,19 +21,31 @@ initsleeplock(struct sleeplock *lk, char *name)
 void
 acquiresleep(struct sleeplock *lk)
 {
+  struct proc *p = myproc();
+
+  if(p == 0)
+    panic("acquiresleep: no proc");
   acquire(&lk->lk);
+  if(lk->locked && lk->pid == p->pid)
+    panic("acquiresleep: recursive");
   while (lk->locked) {
     sleep(lk, &lk->lk);
   }
   lk->locked = 1;
-  lk->pid = myproc()->pid;
+  lk->pid = p->pid;
   release(&lk->lk);
 }
 
 void
 releasesleep(struct sleeplock *lk)
 {
+  struct proc *p = myproc();
+
+  if(p == 0)
+    panic("releasesleep: no proc");
   acquire(&lk->lk);
+  if(!lk->locked || lk->pid != p->pid)
+    panic("releasesleep: not owner");
   lk->locked = 0;
   lk->pid = 0;
   wakeup(lk);
@@ -43,10 +55,13 @@ releasesleep(struct sleeplock *lk)
 int
 holdingsleep(struct sleeplock *lk)
 {
+  struct proc *p = myproc();
   int r;
   
+  if(p == 0)
+    return 0;
   acquire(&lk->lk);
-  r = lk->locked && (lk->pid == myproc()->pid);
+  r = lk->locked && (lk->pid == p->pid);
   release(&lk->lk);
   return r;
 }

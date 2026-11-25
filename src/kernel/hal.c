@@ -21,16 +21,25 @@ hal_intr_inithart(void)
   plicinithart();
 }
 
-int
+uint64
 hal_irq_claim(void)
 {
-  return plic_claim();
+  return (uint64)plic_claim();
 }
 
 void
-hal_irq_complete(int irq)
+hal_irq_complete(uint64 irq)
 {
-  plic_complete(irq);
+  plic_complete((int)irq);
+}
+
+void
+hal_send_ipi(int cpu)
+{
+  if(cpu < 0 || cpu >= NCPU)
+    return;
+  __sync_synchronize();
+  *(volatile uint32*)CLINT_MSIP(cpu) = 1;
 }
 
 void

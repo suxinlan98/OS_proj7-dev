@@ -191,14 +191,14 @@ devintr()
     // this is a supervisor external interrupt, via PLIC.
 
     // irq indicates which device interrupted.
-    int irq = hal_irq_claim();
+    uint64 irq = hal_irq_claim();
 
     if(irq == UART0_IRQ){
       uartintr();
     } else if(irq == VIRTIO0_IRQ){
       virtio_disk_intr();
     } else if(irq){
-      printf("unexpected interrupt irq=%d\n", irq);
+      printf("unexpected interrupt irq=%ld\n", irq);
     }
 
     // the PLIC allows each device to raise at most one
@@ -207,6 +207,10 @@ devintr()
     if(irq)
       hal_irq_complete(irq);
 
+    return 1;
+  } else if(scause == 0x8000000000000001L){
+    // supervisor software interrupt (inter-hart wakeup IPI).
+    w_sip(r_sip() & ~2);
     return 1;
   } else if(scause == 0x8000000000000005L){
     // timer interrupt.

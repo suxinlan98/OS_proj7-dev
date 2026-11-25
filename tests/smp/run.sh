@@ -36,15 +36,17 @@ python3 "$ROOT_DIR/tests/runner/run_qemu_case.py" \
   --final-wait 300 \
   --expect "mount: ext2 on /mnt dev 2" \
   --expect "mount: fat32 on /fat dev 3" \
-  --expect "bigfile: ok (1048576 bytes, full)" \
-  --expect "bigfile: ok (1048576 bytes, verify)" \
-  --expect "stressfs starting" \
+  --expect-count "bigfile: ok (1048576 bytes, full)" 2 \
+  --expect-count "bigfile: ok (1048576 bytes, keep)" 4 \
+  --expect-count "bigfile: ok (1048576 bytes, verify)" 4 \
+  --expect-count "stressfs starting" 2 \
   --expect "UMOUNT_STRESS_OK" \
-  --expect "SMP_DONE" \
+  --expect-count "SMP_DONE" 2 \
   --reject "panic:" \
   --reject "kerneltrap" \
   --reject "mount: failed" \
   --reject "bigfile: FAIL" \
+  --reject "stressfs: FAIL" \
   --reject "umountstress: FAIL" \
   --reject "cannot"
 test_status=$?

@@ -7,33 +7,44 @@
 #define DEFAULT_LOOPS 80
 
 static void
-lookup_worker(char *probe, int loops)
+lookup_worker(char *probe, int loops, int pfd)
 {
   char buf[32];
-  int fd, i;
+  int fd, i, ok = 0;
 
   for(i = 0; i < loops; i++){
     fd = open(probe, O_RDONLY);
     if(fd >= 0){
       if(read(fd, buf, sizeof(buf)) <= 0){
         close(fd);
+        close(pfd);
         exit(1);
       }
       close(fd);
+      ok++;
     }
   }
+  write(pfd, &ok, sizeof(ok));
+  close(pfd);
   exit(0);
 }
 
 static void
-topology_worker(char *fstype, char *path, int dev, int loops)
+topology_worker(char *fstype, char *path, int dev, int loops, int pfd)
 {
-  int i;
+  int i, ok = 0;
 
   for(i = 0; i < loops; i++){
-    if(umount(path) == 0 && mount(fstype, path, dev) < 0)
-      exit(1);
+    if(umount(path) == 0){
+      if(mount(fstype, path, dev) < 0){
+        close(pfd);
+        exit(1);
+      }
+      ok++;
+    }
   }
+  write(pfd, &ok, sizeof(ok));
+  close(pfd);
   exit(0);
 }
 
@@ -47,6 +58,8 @@ main(int argc, char *argv[])
   int dev = 2;
   int loops = DEFAULT_LOOPS;
   int fd, i, start, status;
+  int lp[2], tp[2];
+  int total_opens = 0, total_umounts = 0, cnt;
 
   if(argc != 1 && argc != 6){
     printf("usage: umountstress [fstype path dev probe loops]\n");
@@ -71,19 +84,57 @@ main(int argc, char *argv[])
   }
   close(fd);
 
+  if(pipe(lp) < 0 || pipe(tp) < 0){
+    printf("umountstress: FAIL pipe\n");
+    exit(1);
+  }
+
   start = uptime();
   for(i = 0; i < 2; i++){
-    if(fork() == 0)
-      lookup_worker(probe, loops);
-    if(fork() == 0)
-      topology_worker(fstype, path, dev, loops);
+    int pid = fork();
+    if(pid < 0){
+      printf("umountstress: FAIL fork\n");
+      exit(1);
+    }
+    if(pid == 0){
+      close(lp[0]);
+      close(tp[0]);
+      close(tp[1]);
+      lookup_worker(probe, loops, lp[1]);
+    }
+    pid = fork();
+    if(pid < 0){
+      printf("umountstress: FAIL fork\n");
+      exit(1);
+    }
+    if(pid == 0){
+      close(tp[0]);
+      close(lp[0]);
+      close(lp[1]);
+      topology_worker(fstype, path, dev, loops, tp[1]);
+    }
   }
+  close(lp[1]);
+  close(tp[1]);
 
   for(i = 0; i < 4; i++){
     if(wait(&status) < 0 || status != 0){
       printf("umountstress: FAIL child\n");
       exit(1);
     }
+  }
+  for(i = 0; i < 2; i++){
+    if(read(lp[0], &cnt, sizeof(cnt)) == sizeof(cnt))
+      total_opens += cnt;
+    if(read(tp[0], &cnt, sizeof(cnt)) == sizeof(cnt))
+      total_umounts += cnt;
+  }
+  close(lp[0]);
+  close(tp[0]);
+  if(total_opens <= 0 || total_umounts <= 0){
+    printf("umountstress: FAIL zero progress (opens=%d umounts=%d)\n",
+           total_opens, total_umounts);
+    exit(1);
   }
 
   fd = open(probe, O_RDONLY);

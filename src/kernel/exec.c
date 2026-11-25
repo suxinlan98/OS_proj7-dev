@@ -10,14 +10,17 @@
 static int loadseg(pde_t *, uint64, struct inode *, uint, uint);
 
 // map ELF permissions to PTE permission bits.
-int flags2perm(int flags)
+uint64
+flags2perm(int flags)
 {
-    int perm = 0;
-    if(flags & 0x1)
-      perm = PTE_X;
-    if(flags & 0x2)
-      perm |= PTE_W;
-    return perm;
+  uint64 perm = 0;
+  if(flags & 0x1)
+    perm |= PTE_X;
+  else
+    perm |= PTE_NX;
+  if(flags & 0x2)
+    perm |= PTE_W;
+  return perm;
 }
 
 //
@@ -27,7 +30,8 @@ int
 kexec(char *path, char **argv)
 {
   char *s, *last;
-  int i, off;
+  int i, has_load = 0, entry_ok = 0;
+  uint64 off;
   uint64 argc, sz = 0, sp, ustack[MAXARG], stackbase;
   struct elfhdr elf;
   struct inode *ip;
@@ -66,31 +70,42 @@ kexec(char *path, char **argv)
     goto bad;
 
   // Is this really an ELF file?
-  if(elf.magic != ELF_MAGIC)
+  if(elf.magic != ELF_MAGIC || elf.phentsize != sizeof(ph) || elf.phnum == 0)
     goto bad;
 
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
 
   // Load program into memory.
-  for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
-    if(vfs_readi(ip, 0, (uint64)&ph, off, sizeof(ph)) != sizeof(ph))
+  for(i = 0, off = elf.phoff; i < elf.phnum; i++, off += sizeof(ph)){
+    if(off > 0xffffffffULL || off + sizeof(ph) < off)
+      goto bad;
+    if(vfs_readi(ip, 0, (uint64)&ph, (uint)off, sizeof(ph)) != sizeof(ph))
       goto bad;
     if(ph.type != ELF_PROG_LOAD)
       continue;
     if(ph.memsz < ph.filesz)
       goto bad;
-    if(ph.vaddr + ph.memsz < ph.vaddr)
+    if(ph.vaddr + ph.memsz < ph.vaddr || ph.vaddr + ph.memsz >= TRAPFRAME)
       goto bad;
-    if(ph.vaddr % PGSIZE != 0)
+    if(ph.off > 0xffffffffULL || ph.off + ph.filesz < ph.off ||
+       ph.off + ph.filesz > 0xffffffffULL)
+      goto bad;
+    if(ph.vaddr % PGSIZE != 0 || ph.vaddr < sz)
       goto bad;
     uint64 sz1;
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz, flags2perm(ph.flags))) == 0)
       goto bad;
     sz = sz1;
-    if(loadseg(pagetable, ph.vaddr, ip, ph.off, ph.filesz) < 0)
+    if(loadseg(pagetable, ph.vaddr, ip, (uint)ph.off, (uint)ph.filesz) < 0)
       goto bad;
+    has_load = 1;
+    if((ph.flags & 0x1) && elf.entry >= ph.vaddr &&
+       elf.entry < ph.vaddr + ph.memsz)
+      entry_ok = 1;
   }
+  if(!has_load || !entry_ok)
+    goto bad;
   iunlockput(ip);
   end_op();
   ip = 0;
@@ -101,9 +116,13 @@ kexec(char *path, char **argv)
   // Allocate some pages at the next page boundary.
   // Make the first inaccessible as a stack guard.
   // Use the rest as the user stack.
-  sz = PGROUNDUP(sz);
+  uint64 stack_bytes = (uint64)(USERSTACK + 1) * PGSIZE;
+  uint64 newsz = PGROUNDUP(sz);
+  if(newsz < sz || newsz + stack_bytes < newsz || newsz + stack_bytes >= TRAPFRAME)
+    goto bad;
+  sz = newsz;
   uint64 sz1;
-  if((sz1 = uvmalloc(pagetable, sz, sz + (USERSTACK+1)*PGSIZE, PTE_W)) == 0)
+  if((sz1 = uvmalloc(pagetable, sz, sz + stack_bytes, PTE_W | PTE_NX)) == 0)
     goto bad;
   sz = sz1;
   uvmclear(pagetable, sz-(USERSTACK+1)*PGSIZE);

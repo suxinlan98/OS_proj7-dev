@@ -374,10 +374,15 @@ virtio_disk_rw(struct buf *b, int write)
 {
   uint64 blockno = b->blockno;
 
-  if(b->dev == EXT2DEV)
+  if(b->dev == ROOTDEV){
+    // Root xv6 volume starts at block 0.
+  } else if(b->dev == EXT2DEV){
     blockno += FSSIZE;
-  else if(b->dev == FAT32DEV)
+  } else if(b->dev == FAT32DEV){
     blockno += FAT32START;
+  } else {
+    panic("virtio_disk_rw: invalid dev");
+  }
 
   uint64 sector = blockno * (BSIZE / 512);
 

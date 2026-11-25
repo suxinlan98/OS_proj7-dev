@@ -62,3 +62,24 @@ kernelvec:
 
         # return to whatever we were doing in the kernel.
         sret
+
+        # Machine-mode IPI relay: clears CLINT MSIP for this hart and
+        # raises supervisor software interrupt (MIP.SSIP) so wfi wakes
+        # immediately without requiring SBI firmware.
+.globl ipi_mvec
+.align 4
+ipi_mvec:
+        csrrw a0, mscratch, a0
+        sd a1, 0(a0)
+        sd a2, 8(a0)
+        csrr a1, mhartid
+        slli a1, a1, 2
+        li a2, 0x02000000
+        add a2, a2, a1
+        sw zero, 0(a2)
+        li a1, 2
+        csrs mip, a1
+        ld a2, 8(a0)
+        ld a1, 0(a0)
+        csrrw a0, mscratch, a0
+        mret

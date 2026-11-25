@@ -41,7 +41,7 @@ proc_mapstacks(pagetable_t kpgtbl)
     if(pa == 0)
       panic("kalloc");
     uint64 va = KSTACK((int) (p - proc));
-    kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+    kvmmap(kpgtbl, va, (uint64)pa, PGSIZE, PTE_R | PTE_W | PTE_NX);
   }
 }
 
@@ -154,17 +154,17 @@ found:
   return p;
 }
 
-// free a proc structure and the data hanging from it,
-// including user pages.
-// p->lock must be held.
+// Detach resources from p and reset its slot to UNUSED.
+// Caller must hold p->lock. Returned resources must be freed
+// without holding spinlocks whenever possible.
 static void
-freeproc(struct proc *p)
+detachproc(struct proc *p, struct trapframe **tf_out,
+           pagetable_t *pt_out, uint64 *sz_out)
 {
-  if(p->trapframe)
-    kfree((void*)p->trapframe);
+  *tf_out = p->trapframe;
+  *pt_out = p->pagetable;
+  *sz_out = p->sz;
   p->trapframe = 0;
-  if(p->pagetable)
-    proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -174,6 +174,29 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+}
+
+static void
+releaseproc_mem(struct trapframe *tf, pagetable_t pt, uint64 sz)
+{
+  if(tf)
+    kfree((void*)tf);
+  if(pt)
+    proc_freepagetable(pt, sz);
+}
+
+// free a proc structure and the data hanging from it,
+// including user pages.
+// p->lock must be held.
+static void
+freeproc(struct proc *p)
+{
+  struct trapframe *tf;
+  pagetable_t pt;
+  uint64 sz;
+
+  detachproc(p, &tf, &pt, &sz);
+  releaseproc_mem(tf, pt, sz);
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -204,7 +227,7 @@ proc_pagetable(struct proc *p)
   // trampoline.S.
 #ifdef ARCH_LOONGARCH
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
-              (uint64)(p->trapframe), PTE_P | PTE_W | PTE_MAT | PTE_D) < 0){
+              (uint64)(p->trapframe), PTE_P | PTE_W | PTE_MAT | PTE_D | PTE_NX) < 0){
 #else
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
@@ -257,11 +280,16 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+    uint64 inc = (uint64)n;
+    if(sz + inc < sz || sz + inc >= TRAPFRAME)
+      return -1;
+    if((sz = uvmalloc(p->pagetable, sz, sz + inc, PTE_W | PTE_NX)) == 0) {
       return -1;
     }
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    uint64 dec = (uint64)(-(long)n);
+    if(dec <= sz)
+      sz = uvmdealloc(p->pagetable, sz, sz - dec);
   }
   p->sz = sz;
   return 0;
@@ -399,17 +427,31 @@ kwait(uint64 addr)
 
         havekids = 1;
         if(pp->state == ZOMBIE){
-          // Found one.
+          // Found one. Release locks before copyout() and freeing
+          // potentially large user page tables.
+          int xstate = pp->xstate;
+          struct trapframe *tf = 0;
+          pagetable_t pt = 0;
+          uint64 sz = 0;
           pid = pp->pid;
-          if(addr != 0 && copyout(p->pagetable, addr, (char *)&pp->xstate,
-                                  sizeof(pp->xstate)) < 0) {
+
+          if(addr != 0){
             release(&pp->lock);
             release(&wait_lock);
-            return -1;
+            if(copyout(p->pagetable, addr, (char *)&xstate,
+                       sizeof(xstate)) < 0)
+              return -1;
+            acquire(&wait_lock);
+            acquire(&pp->lock);
+            if(pp->parent != p || pp->state != ZOMBIE || pp->pid != pid){
+              release(&pp->lock);
+              continue;
+            }
           }
-          freeproc(pp);
+          detachproc(pp, &tf, &pt, &sz);
           release(&pp->lock);
           release(&wait_lock);
+          releaseproc_mem(tf, pt, sz);
           return pid;
         }
         release(&pp->lock);
@@ -470,7 +512,10 @@ scheduler(void)
     }
     if(found == 0) {
       // nothing to run; stop running on this core until an interrupt.
+      __atomic_store_n(&c->idle, 1, __ATOMIC_RELEASE);
+      __sync_synchronize();
       cpu_idle();
+      __atomic_store_n(&c->idle, 0, __ATOMIC_RELEASE);
     }
   }
 }
@@ -589,22 +634,40 @@ sleep(void *chan, struct spinlock *lk)
   acquire(lk);
 }
 
+static void
+wakeup_idle_cpus(void)
+{
+  int me, i;
+
+  push_off();
+  me = cpuid();
+  for(i = 0; i < NCPU; i++){
+    if(i != me && __atomic_load_n(&cpus[i].idle, __ATOMIC_ACQUIRE))
+      hal_send_ipi(i);
+  }
+  pop_off();
+}
+
 // Wake up all processes sleeping on channel chan.
 // Caller should hold the condition lock.
 void
 wakeup(void *chan)
 {
   struct proc *p;
+  int woke = 0;
 
   for(p = proc; p < &proc[NPROC]; p++) {
     if(p != myproc()){
       acquire(&p->lock);
       if(p->state == SLEEPING && p->chan == chan) {
         p->state = RUNNABLE;
+        woke = 1;
       }
       release(&p->lock);
     }
   }
+  if(woke)
+    wakeup_idle_cpus();
 }
 
 // Kill the process with the given pid.

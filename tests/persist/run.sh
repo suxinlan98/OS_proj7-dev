@@ -14,7 +14,7 @@ if [ "$TEST_ARCH" != "riscv" ]; then
 fi
 WRITE_LOG="$LOG_DIR/qemu-persist-write$LOG_SUFFIX.log"
 READ_LOG="$LOG_DIR/qemu-persist-read$LOG_SUFFIX.log"
-RESULT_LOG="$LOG_DIR/result.log"
+RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -30,12 +30,14 @@ python3 "$ROOT_DIR/tests/runner/run_qemu_case.py" \
   --xv6-dir "$XV6_DIR" \
   --commands "$SCRIPT_DIR/write.cmds.sh" \
   --log "$WRITE_LOG" \
+  --prompt-wait \
+  --cmd-timeout 180 \
   --expect "mount: ext2 on /mnt dev 2" \
   --expect "mount: fat32 on /fat dev 3" \
-  --expect "persist-ext2" \
-  --expect "persist-fat" \
+  --expect-count "persist-ext2" 2 \
+  --expect-count "persist-fat" 2 \
   --expect "bigfile: ok (1048576 bytes, keep)" \
-  --expect "PERSIST_WRITE_DONE" \
+  --expect-count "PERSIST_WRITE_DONE" 2 \
   --reject "panic:" \
   --reject "kerneltrap" \
   --reject "mount: failed" \
@@ -52,13 +54,15 @@ if [ "$write_status" -eq 0 ]; then
     --xv6-dir "$XV6_DIR" \
     --commands "$SCRIPT_DIR/read.cmds.sh" \
     --log "$READ_LOG" \
+    --prompt-wait \
+    --cmd-timeout 180 \
     --expect "mount: ext2 on /mnt dev 2" \
     --expect "mount: fat32 on /fat dev 3" \
-    --expect "persist-ext2" \
-    --expect "persist-fat" \
+    --expect-count "persist-ext2" 1 \
+    --expect-count "persist-fat" 1 \
     --expect "bigfile: ok (1048576 bytes, verify)" \
     --expect "0 1 1048576" \
-    --expect "PERSIST_READ_DONE" \
+    --expect-count "PERSIST_READ_DONE" 2 \
     --reject "panic:" \
     --reject "kerneltrap" \
     --reject "mount: failed" \

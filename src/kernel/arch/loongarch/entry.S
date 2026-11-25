@@ -11,8 +11,10 @@ _entry:
         csrwr       $t0, LOONGARCH_CSR_DMWIN1
         li.d        $t0, 0x0000000000000000
         csrwr       $t0, LOONGARCH_CSR_DMWIN2
+        li.d        $t0, 0x0000000000000000
         csrwr       $t0, LOONGARCH_CSR_DMWIN3
-        csrwr       $t0, LOONGARCH_CSR_TLBRENTRY	
+        li.d        $t0, 0x0000000000000000
+        csrwr       $t0, LOONGARCH_CSR_TLBRENTRY
         li.w	    $t0, 0xb0		      # PLV=0, IE=0, PG=1
 	csrwr	    $t0, LOONGARCH_CSR_CRMD
         invtlb      0x0,$zero,$zero

@@ -13,7 +13,7 @@ if [ "$TEST_ARCH" != "riscv" ]; then
   CASE_NAME="${TEST_ARCH}_fat32"
 fi
 RAW_LOG="$LOG_DIR/qemu-fat32$LOG_SUFFIX.log"
-RESULT_LOG="$LOG_DIR/result.log"
+RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -29,14 +29,16 @@ python3 "$ROOT_DIR/tests/runner/run_qemu_case.py" \
   --xv6-dir "$XV6_DIR" \
   --commands "$SCRIPT_DIR/cmds.sh" \
   --log "$RAW_LOG" \
+  --prompt-wait \
+  --cmd-timeout 180 \
   --expect "mount: fat32 on /fat dev 3" \
-  --expect "fat32-one" \
-  --expect "fat32-two" \
-  --expect "fat-nested" \
-  --expect "fat32-lfn-ok" \
+  --expect-count "fat32-one" 2 \
+  --expect-count "fat32-two" 2 \
+  --expect-count "fat-nested" 2 \
+  --expect-count "fat32-lfn-ok" 3 \
   --expect "longfilename.t" \
   --expect "ShortLong.txt" \
-  --expect "FAT32_DONE" \
+  --expect-count "FAT32_DONE" 2 \
   --reject "panic:" \
   --reject "kerneltrap" \
   --reject "mount: failed" \

@@ -8,7 +8,7 @@
 # ./test-xv6.py crash  (runs the crash tests)
 # ./test-xv6.py log (runs the log crash test)
 
-import argparse, os, inspect, re, signal, subprocess, sys, time
+import argparse, os, inspect, re, select, signal, subprocess, sys, time
 from subprocess import run
 
 parser = argparse.ArgumentParser()
@@ -16,68 +16,100 @@ parser.add_argument('testrex', help="test name or regular expression")
 parser.add_argument("-q", action='store_true', help="usertests quick")
 args = parser.parse_args()
 
+TEST_ARCH = os.environ.get("ARCH") or os.environ.get("TEST_ARCH") or "riscv"
+
 class QEMU(object):
 
     def __init__(self, reset=False):
         if reset:
             self.build_xv6()
             self.reset_fs()
-        q = ["make", "qemu"]
+        q = ["make", f"ARCH={TEST_ARCH}", "qemu"]
         self.proc = subprocess.Popen(q, stdin=subprocess.PIPE,
                                       stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT)
+                                      stderr=subprocess.STDOUT,
+                                      preexec_fn=os.setsid)
         self.output = ""
-        self.outbytes = bytearray()       
+        self.outbytes = bytearray()
         time.sleep(5)
 
     def reset_fs(self):
         try:
-            run(["rm", "fs.img"], check=True)
-            run(["make", "fs.img"], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Command failed with exit code {e.returncode}")
+            if os.path.exists("fs.img"):
+                os.remove("fs.img")
+            run(["make", f"ARCH={TEST_ARCH}", "fs.img"], check=True)
+        except (OSError, subprocess.CalledProcessError) as e:
+            print(f"reset_fs failed: {e}")
+            sys.exit(1)
 
     def build_xv6(self):
         try:
-            run(["make", "kernel/kernel"], check=True)
+            run(["make", f"ARCH={TEST_ARCH}", "kernel/kernel"], check=True)
         except subprocess.CalledProcessError as e:
-            print(f"Command failed with exit code {e.returncode}")
+            print(f"build_xv6 failed with exit code {e.returncode}")
+            sys.exit(1)
 
     def save_output(self):
-      try:
-        with open("test-xv6.out", "w") as f:
-            f.write(self.out)
-            f.close()
-      except OSError as e:
-        print("Provided a bad results path. Error:", e)     
-        
+        try:
+            with open("test-xv6.out", "w") as f:
+                f.write(self.output)
+        except OSError as e:
+            print("Provided a bad results path. Error:", e)
+
     def cmd(self, c):
         if isinstance(c, str):
             c = c.encode('utf-8')
         self.proc.stdin.write(c)
         self.proc.stdin.flush()
-        
+
     def crash(self):
-        ps = run(['ps', '-opid', '--no-headers', '--ppid', str(self.proc.pid)], stdout=subprocess.PIPE, encoding='utf8')
-        kids = [int(line) for line in ps.stdout.splitlines()]
+        ps = run(['ps', '-opid', '--no-headers', '--ppid', str(self.proc.pid)],
+                 stdout=subprocess.PIPE, encoding='utf8')
+        kids = [int(line) for line in ps.stdout.splitlines() if line.strip()]
         if len(kids) == 0:
             print("no qemu")
-            os.exit(1)
+            self.stop()
+            sys.exit(1)
         print("kill", kids[0])
         os.kill(kids[0], signal.SIGKILL)
 
     def stop(self):
-        self.proc.terminate()
+        try:
+            os.killpg(self.proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            self.proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(self.proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                self.proc.wait(timeout=2.0)
+            except Exception:
+                pass
 
-    def read(self):
-        buf = os.read(self.proc.stdout.fileno(), 4096)
-        self.outbytes.extend(buf)
-        self.output = self.outbytes.decode("utf-8", "replace")
+    def read(self, timeout=0.5):
+        fd = self.proc.stdout.fileno()
+        deadline = time.time() + timeout
+        while True:
+            rem = max(0.0, deadline - time.time())
+            r, _, _ = select.select([fd], [], [], rem)
+            if not r:
+                break
+            buf = os.read(fd, 4096)
+            if not buf:
+                break
+            self.outbytes.extend(buf)
+            self.output = self.outbytes.decode("utf-8", "replace")
+            # Keep draining while more bytes are immediately ready.
+            deadline = time.time()
 
     def lines(self):
         return self.output.splitlines()
 
-    def error(self):
+    def error(self, regexps=()):
         print("FAIL: match failed", regexps)
         self.save_output()
         self.stop()
@@ -91,26 +123,40 @@ class QEMU(object):
                 print(line)
                 last = i
         if last == -1 and exit:
-            self.error()
+            self.error(regexps)
         l = ""
         if last >= 0:
             l = lines[last]
         return last >= 0, l
 
-    def monitor(self, *regexps, progress="", timeout):
+    def monitor(self, *regexps, progress="", fail="", timeout):
         deadline = time.time() + timeout
+        printed = 0
         while True:
-            time.sleep(1)
             timeleft = deadline - time.time()
-            if timeleft < 0:
-                self.error()
-            self.read()
-            ok, _ = self.match(*regexps, exit=False)
-            if ok:
-                return
-            ok, line = self.match(progress, exit=False)
-            if ok:
-                print(line)
+            if timeleft <= 0:
+                self.error(regexps)
+            self.read(timeout=min(1.0, timeleft))
+            lines = self.lines()
+            complete = len(lines)
+            if complete > 0 and not self.output.endswith(("\n", "\r")):
+                complete -= 1
+            for line in lines[printed:complete]:
+                if any(re.match(r, line) for r in regexps):
+                    print(line)
+                    return
+                if fail and re.search(fail, line):
+                    print(line)
+                    self.error(regexps)
+                if progress and re.match(progress, line):
+                    print(line)
+            printed = complete
+            if self.proc.poll() is not None:
+                for line in lines[printed:]:
+                    if any(re.match(r, line) for r in regexps):
+                        print(line)
+                        return
+                self.error(regexps)
 
 def crash_log():
     q = QEMU(True)
@@ -190,13 +236,14 @@ def test_usertests(test=""):
     timeout = 600
     opt = ""
     if args.q:
-        opt = " -q"
+        opt += " -q"
         timeout = 300
-    elif test != "":
+    if test != "":
         opt += " " + test
     q = QEMU(True)
     q.cmd("usertests" + opt + "\n")
-    q.monitor('^ALL TESTS PASSED', progress='test', timeout=timeout)
+    q.monitor('^ALL TESTS PASSED', progress='test',
+              fail='SOME TESTS FAILED|panic:|kerneltrap', timeout=timeout)
     q.stop()
 
 def main():

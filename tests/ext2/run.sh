@@ -13,7 +13,7 @@ if [ "$TEST_ARCH" != "riscv" ]; then
   CASE_NAME="${TEST_ARCH}_ext2"
 fi
 RAW_LOG="$LOG_DIR/qemu-ext2$LOG_SUFFIX.log"
-RESULT_LOG="$LOG_DIR/result.log"
+RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 
@@ -29,14 +29,16 @@ python3 "$ROOT_DIR/tests/runner/run_qemu_case.py" \
   --xv6-dir "$XV6_DIR" \
   --commands "$SCRIPT_DIR/cmds.sh" \
   --log "$RAW_LOG" \
+  --prompt-wait \
+  --cmd-timeout 180 \
   --expect "mount: ext2 on /mnt dev 2" \
-  --expect "Hello, world" \
-  --expect "ext2-first" \
-  --expect "ext2-second" \
-  --expect "ext2-nested" \
+  --expect-count "Hello, world" 2 \
+  --expect-count "ext2-first" 2 \
+  --expect-count "ext2-second" 2 \
+  --expect-count "ext2-nested" 2 \
   --expect "bigfile: ok" \
   --expect "0 1 1048576" \
-  --expect "EXT2_DONE" \
+  --expect-count "EXT2_DONE" 2 \
   --reject "panic:" \
   --reject "kerneltrap" \
   --reject "mount: failed" \

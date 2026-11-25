@@ -10,11 +10,13 @@
 #include "file.h"
 #include "vfs.h"
 
-#define FAT32_SIG0       0x55
-#define FAT32_SIG1       0xAA
-#define FAT32_ROOT_INO   2
-#define FAT32_EOC        0x0ffffff8
-#define FAT32_MASK       0x0fffffff
+#define FAT32_SIG0           0x55
+#define FAT32_SIG1           0xAA
+#define FAT32_ROOT_INO       2
+#define FAT32_EOC            0x0ffffff8
+#define FAT32_MASK           0x0fffffff
+#define FAT32_EMPTY_INO_BIT  0x80000000U
+#define FAT32_MAX_LFN_SLOTS  20
 
 #define FAT32_ATTR_VOL   0x08
 #define FAT32_ATTR_DIR   0x10
@@ -187,6 +189,8 @@ fat32_zero_cluster(struct fat32_fs *fs, uint clus)
   uchar zero[BSIZE];
   uint off, n;
 
+  if(clus < 2 || clus > fs->nclus + 1)
+    return -1;
   memset(zero, 0, sizeof(zero));
   for(off = 0; off < fs->cluster_size; off += n){
     n = fat32_min(BSIZE, fs->cluster_size - off);
@@ -197,12 +201,11 @@ fat32_zero_cluster(struct fat32_fs *fs, uint clus)
   return 0;
 }
 
+// Caller must hold fs->lock.
 static uint
-fat32_alloc_cluster(struct fat32_fs *fs)
+fat32_alloc_cluster_locked(struct fat32_fs *fs)
 {
   uint clus, val, start;
-
-  acquiresleep(&fs->lock);
 
   // Next-free hint: continue where the last allocation stopped
   // instead of rescanning the FAT from cluster 2 every time.
@@ -211,38 +214,63 @@ fat32_alloc_cluster(struct fat32_fs *fs)
     start = 2;
   clus = start;
   for(;;){
-    if(fat32_read_fat(fs, clus, &val) < 0){
-      releasesleep(&fs->lock);
+    if(fat32_read_fat(fs, clus, &val) < 0)
       return 0;
-    }
     if(val == 0){
-      if(fat32_write_fat(fs, clus, FAT32_EOC) < 0){
-        releasesleep(&fs->lock);
+      if(fat32_write_fat(fs, clus, FAT32_EOC) < 0)
         return 0;
-      }
       if(fat32_zero_cluster(fs, clus) < 0){
         fat32_write_fat(fs, clus, 0);
-        releasesleep(&fs->lock);
         return 0;
       }
       fs->next_free = clus + 1;
-      releasesleep(&fs->lock);
       return clus;
     }
     clus++;
     if(clus > fs->nclus + 1)
       clus = 2;
-    if(clus == start){
-      releasesleep(&fs->lock);
+    if(clus == start)
       return 0;
-    }
   }
+}
+
+static uint
+fat32_alloc_cluster(struct fat32_fs *fs)
+{
+  uint clus;
+
+  acquiresleep(&fs->lock);
+  clus = fat32_alloc_cluster_locked(fs);
+  releasesleep(&fs->lock);
+  return clus;
+}
+
+static uint
+fat32_append_cluster(struct fat32_fs *fs, uint prev_clus)
+{
+  uint newclus;
+
+  acquiresleep(&fs->lock);
+  newclus = fat32_alloc_cluster_locked(fs);
+  if(newclus == 0){
+    releasesleep(&fs->lock);
+    return 0;
+  }
+  if(fat32_write_fat(fs, prev_clus, newclus) < 0){
+    fat32_write_fat(fs, newclus, 0);
+    if(newclus < fs->next_free)
+      fs->next_free = newclus;
+    releasesleep(&fs->lock);
+    return 0;
+  }
+  releasesleep(&fs->lock);
+  return newclus;
 }
 
 static void
 fat32_free_after(struct fat32_fs *fs, uint first)
 {
-  uint next, cur;
+  uint next, cur, hops = 0;
 
   if(first < 2)
     return;
@@ -251,6 +279,8 @@ fat32_free_after(struct fat32_fs *fs, uint first)
   fat32_write_fat(fs, first, FAT32_EOC);
 
   while(!fat32_is_eoc(cur) && cur >= 2){
+    if(++hops > fs->nclus)
+      break;
     if(fat32_read_fat(fs, cur, &next) < 0)
       break;
     fat32_write_fat(fs, cur, 0);
@@ -277,7 +307,7 @@ static uint
 fat32_cluster_at(struct inode *ip, uint index, int alloc)
 {
   struct fat32_fs *fs = (struct fat32_fs*)ip->mnt->fs_private;
-  uint clus, next, cur;
+  uint clus, next, cur, hops = 0;
 
   // Walk the chain from the cached position when possible; rescanning
   // from the head for every block makes large files quadratic.
@@ -292,18 +322,16 @@ fat32_cluster_at(struct inode *ip, uint index, int alloc)
     return 0;
 
   while(cur < index){
+    if(++hops > fs->nclus)
+      return 0;
     if(fat32_read_fat(fs, clus, &next) < 0)
       return 0;
     if(fat32_is_eoc(next)){
       if(!alloc)
         return 0;
-      next = fat32_alloc_cluster(fs);
+      next = fat32_append_cluster(fs, clus);
       if(next == 0)
         return 0;
-      if(fat32_write_fat(fs, clus, next) < 0){
-        fat32_write_fat(fs, next, 0);
-        return 0;
-      }
     }
     clus = next;
     cur++;
@@ -415,14 +443,21 @@ fat32_iget(struct mount *mnt, struct fat32_dirent *de, uint entry_off)
 {
   struct fat32_fs *fs = (struct fat32_fs*)mnt->fs_private;
   struct inode *ip;
-  uint clus;
+  uint clus, inum;
 
   clus = fat32_first_cluster(de);
-  if(clus < 2)
+  if(clus == 0){
+    if((de->attr & FAT32_ATTR_DIR) || entry_off == 0)
+      return 0;
+    inum = FAT32_EMPTY_INO_BIT | (entry_off >> 5);
+  } else if(clus < 2 || clus > fs->nclus + 1){
     return 0;
-  if(mnt->root != 0 && clus == fs->root_clus)
-    return idup(mnt->root);
-  ip = iget(mnt->dev, clus);
+  } else {
+    if(mnt->root != 0 && clus == fs->root_clus)
+      return idup(mnt->root);
+    inum = clus;
+  }
+  ip = iget(mnt->dev, inum);
   // This reference prevents iput() from clearing valid. The acquire
   // fast path also avoids nesting inode locks during pathname lookup.
   if(__atomic_load_n(&ip->valid, __ATOMIC_ACQUIRE))
@@ -440,9 +475,10 @@ fat32_iget(struct mount *mnt, struct fat32_dirent *de, uint entry_off)
 static struct inode*
 fat32_root_inode(struct mount *mnt)
 {
+  struct fat32_fs *fs = (struct fat32_fs*)mnt->fs_private;
   struct inode *ip;
 
-  ip = iget(mnt->dev, FAT32_ROOT_INO);
+  ip = iget(mnt->dev, fs->root_clus);
   acquiresleep(&ip->lock);
   if(!ip->valid){
     ip->fstype = FS_FAT32;
@@ -453,7 +489,7 @@ fat32_root_inode(struct mount *mnt)
     ip->minor = 0;
     ip->nlink = 1;
     ip->size = 0;
-    ip->addrs[0] = fat32fs.root_clus;
+    ip->addrs[0] = fs->root_clus;
     ip->addrs[1] = 0;
     ip->addrs[2] = 0;   // chain-walk cache
     ip->addrs[3] = 0;
@@ -483,13 +519,15 @@ fat32_find_entry(struct inode *dp, uchar name83[11],
 {
   struct fat32_fs *fs = (struct fat32_fs*)dp->mnt->fs_private;
   struct fat32_dirent de;
-  uint clus, next, pos, off;
+  uint clus, next, pos, off, hops = 0;
 
   if(dp->type != T_DIR)
     return -1;
 
   clus = dp->addrs[0];
   while(clus >= 2){
+    if(++hops > fs->nclus)
+      return -1;
     for(pos = 0; pos < fs->cluster_size; pos += sizeof(de)){
       off = fat32_clus_offset(fs, clus) + pos;
       if(fat32_read_entry(fs, off, &de) < 0)
@@ -516,10 +554,12 @@ fat32_find_free_entry(struct inode *dp, uint *entry_off)
 {
   struct fat32_fs *fs = (struct fat32_fs*)dp->mnt->fs_private;
   struct fat32_dirent de;
-  uint clus, next, pos, off, newclus;
+  uint clus, next, pos, off, newclus, hops = 0;
 
   clus = dp->addrs[0];
   while(clus >= 2){
+    if(++hops > fs->nclus)
+      return -1;
     for(pos = 0; pos < fs->cluster_size; pos += sizeof(de)){
       off = fat32_clus_offset(fs, clus) + pos;
       if(fat32_read_entry(fs, off, &de) < 0)
@@ -536,13 +576,9 @@ fat32_find_free_entry(struct inode *dp, uint *entry_off)
     clus = next;
   }
 
-  newclus = fat32_alloc_cluster(fs);
+  newclus = fat32_append_cluster(fs, clus);
   if(newclus == 0)
     return -1;
-  if(fat32_write_fat(fs, clus, newclus) < 0){
-    fat32_write_fat(fs, newclus, 0);
-    return -1;
-  }
   *entry_off = fat32_clus_offset(fs, newclus);
   return 0;
 }
@@ -594,60 +630,78 @@ fat32_sync_inode(struct inode *ip)
 }
 
 static int
-fat32_mount(struct mount *mnt)
+fat32_parse_bpb(uchar *boot, struct fat32_fs *fs)
 {
-  uchar boot[BSIZE];
   uint root_entries, fat16, total16;
-  uint fat_bytes, needed;
-
-  if(fat32fs.used)
-    return -1;
-
-  if(block_read_bytes(mnt->dev, 0, boot, sizeof(boot)) < 0)
-    return -1;
+  uint64 data_start, fat_bytes, needed, total_bytes;
 
   if(boot[BPB_BOOTSIG] != FAT32_SIG0 || boot[BPB_BOOTSIG+1] != FAT32_SIG1)
     return -1;
   if(!fat32_check_type(boot))
     return -1;
 
-  fat32fs.bytes_per_sec = fat32_get16(boot + BPB_BYTSPERSEC);
-  fat32fs.sec_per_clus = boot[BPB_SECPERCLUS];
-  fat32fs.rsvd_sec = fat32_get16(boot + BPB_RSVDSECCNT);
-  fat32fs.num_fats = boot[BPB_NUMFATS];
-  fat32fs.total_sec = fat32_get32(boot + BPB_TOTSEC32);
-  fat32fs.fat_sz = fat32_get32(boot + BPB_FATSZ32);
-  fat32fs.root_clus = fat32_get32(boot + BPB_ROOTCLUS);
+  memset(fs, 0, sizeof(*fs));
+  fs->bytes_per_sec = fat32_get16(boot + BPB_BYTSPERSEC);
+  fs->sec_per_clus = boot[BPB_SECPERCLUS];
+  fs->rsvd_sec = fat32_get16(boot + BPB_RSVDSECCNT);
+  fs->num_fats = boot[BPB_NUMFATS];
+  fs->total_sec = fat32_get32(boot + BPB_TOTSEC32);
+  fs->fat_sz = fat32_get32(boot + BPB_FATSZ32);
+  fs->root_clus = fat32_get32(boot + BPB_ROOTCLUS);
 
   root_entries = fat32_get16(boot + BPB_ROOTENTCNT);
   total16 = fat32_get16(boot + BPB_TOTSEC16);
   fat16 = fat32_get16(boot + BPB_FATSZ16);
 
-  if(fat32fs.bytes_per_sec != 512)
+  if(fs->bytes_per_sec != 512)
     return -1;
-  if(!fat32_is_power2(fat32fs.sec_per_clus))
+  if(!fat32_is_power2(fs->sec_per_clus) || fs->sec_per_clus > 128)
     return -1;
-  if(fat32fs.rsvd_sec == 0 || fat32fs.num_fats == 0 ||
-     fat32fs.fat_sz == 0 || fat32fs.total_sec == 0 ||
-     fat32fs.root_clus < FAT32_ROOT_INO)
+  if(fs->rsvd_sec == 0 || fs->num_fats == 0 ||
+     fs->fat_sz == 0 || fs->total_sec == 0 ||
+     fs->root_clus < FAT32_ROOT_INO)
     return -1;
   if(root_entries != 0 || total16 != 0 || fat16 != 0)
     return -1;
 
-  fat32fs.data_start_sec = fat32fs.rsvd_sec + fat32fs.num_fats * fat32fs.fat_sz;
-  if(fat32fs.total_sec <= fat32fs.data_start_sec)
+  total_bytes = (uint64)fs->total_sec * fs->bytes_per_sec;
+  if(total_bytes > 0xffffffffULL)
     return -1;
-  fat32fs.data_sec = fat32fs.total_sec - fat32fs.data_start_sec;
-  fat32fs.cluster_size = fat32fs.bytes_per_sec * fat32fs.sec_per_clus;
-  fat32fs.nclus = fat32fs.data_sec / fat32fs.sec_per_clus;
-  if(fat32fs.cluster_size == 0 || fat32fs.nclus == 0)
+  data_start = (uint64)fs->rsvd_sec + (uint64)fs->num_fats * fs->fat_sz;
+  if(data_start >= fs->total_sec)
     return -1;
 
-  fat_bytes = fat32fs.fat_sz * fat32fs.bytes_per_sec;
-  needed = (fat32fs.nclus + 2) * 4;
+  fs->data_start_sec = (uint)data_start;
+  fs->data_sec = fs->total_sec - fs->data_start_sec;
+  fs->cluster_size = fs->bytes_per_sec * fs->sec_per_clus;
+  fs->nclus = fs->data_sec / fs->sec_per_clus;
+  if(fs->cluster_size == 0 || fs->nclus == 0)
+    return -1;
+  if(fs->root_clus > fs->nclus + 1)
+    return -1;
+
+  fat_bytes = (uint64)fs->fat_sz * fs->bytes_per_sec;
+  needed = ((uint64)fs->nclus + 2) * 4;
   if(fat_bytes < needed)
     return -1;
+  return 0;
+}
 
+static int
+fat32_mount(struct mount *mnt)
+{
+  uchar boot[BSIZE];
+  struct fat32_fs fs;
+
+  if(fat32fs.used)
+    return -1;
+
+  if(block_read_bytes(mnt->dev, 0, boot, sizeof(boot)) != sizeof(boot))
+    return -1;
+  if(fat32_parse_bpb(boot, &fs) < 0)
+    return -1;
+
+  fat32fs = fs;
   fat32fs.used = 1;
   fat32fs.dev = mnt->dev;
   fat32fs.next_free = 2;
@@ -684,6 +738,15 @@ struct fat32_lfn {
   uchar cksum;           // checksum shared by all fragments
   int endpos;            // name length; > DIRSIZ means "longer than DIRSIZ"
   char name[DIRSIZ];
+  uint slot_offs[FAT32_MAX_LFN_SLOTS];
+  int slot_cnt;
+};
+
+struct fat32_entry_loc {
+  struct fat32_dirent de;
+  uint entry_off;
+  uint lfn_offs[FAT32_MAX_LFN_SLOTS];
+  int lfn_cnt;
 };
 
 static uchar
@@ -713,28 +776,38 @@ fat32_lfn_reset(struct fat32_lfn *st)
 {
   st->expect = 0;
   st->ready = 0;
+  st->slot_cnt = 0;
 }
 
 // Feed one LFN fragment (attr 0x0F directory entry) into the assembly
 // state.  Fragments of one name are stored in reverse order on disk.
 static void
-fat32_lfn_feed(struct fat32_lfn *st, struct fat32_dirent *de)
+fat32_lfn_feed(struct fat32_lfn *st, struct fat32_dirent *de, uint slot_off)
 {
   int seq, i, pos;
   ushort w;
+  uchar cksum = ((uchar*)de)[13];
 
   seq = de->name[0] & 0x3F;
+  if(seq < 1 || seq > FAT32_MAX_LFN_SLOTS){
+    fat32_lfn_reset(st);
+    return;
+  }
   if(de->name[0] & 0x40){
     // logically last fragment, stored first: starts a new chain
     st->expect = seq;
     st->ready = 0;
-    st->cksum = de->name[13];
+    st->cksum = cksum;
     st->endpos = seq * 13;
+    st->slot_cnt = 0;
     memset(st->name, 0, sizeof(st->name));
-  } else if(st->expect == 0 || seq != st->expect || de->name[13] != st->cksum){
+  } else if(st->expect == 0 || seq != st->expect || cksum != st->cksum){
     fat32_lfn_reset(st);        // out of order or checksum mismatch
     return;
   }
+
+  if(st->slot_cnt < FAT32_MAX_LFN_SLOTS)
+    st->slot_offs[st->slot_cnt++] = slot_off;
 
   for(i = 0; i < 13; i++){
     pos = (seq - 1) * 13 + i;
@@ -748,10 +821,12 @@ fat32_lfn_feed(struct fat32_lfn *st, struct fat32_dirent *de)
       st->name[pos] = w < 0x80 ? w : '?';
   }
 
-  if(seq == 1)
+  if(seq == 1){
+    st->expect = 0;
     st->ready = 1;              // chain complete
-  else
+  } else {
     st->expect = seq - 1;
+  }
 }
 
 // Consult the assembled chain when its short-name entry shows up.
@@ -759,7 +834,7 @@ fat32_lfn_feed(struct fat32_lfn *st, struct fat32_dirent *de)
 // complete and its checksum matches this entry's 8.3 name.
 static int
 fat32_lfn_take(struct fat32_lfn *st, struct fat32_dirent *de,
-               char *name, int *len)
+               char *name, int *len, uint *lfn_offs, int *lfn_cnt)
 {
   int ok;
 
@@ -767,6 +842,12 @@ fat32_lfn_take(struct fat32_lfn *st, struct fat32_dirent *de,
   if(ok){
     memmove(name, st->name, DIRSIZ);
     *len = st->endpos;
+    if(lfn_offs && lfn_cnt){
+      memmove(lfn_offs, st->slot_offs, st->slot_cnt * sizeof(uint));
+      *lfn_cnt = st->slot_cnt;
+    }
+  } else if(lfn_cnt){
+    *lfn_cnt = 0;
   }
   fat32_lfn_reset(st);
   return ok;
@@ -801,49 +882,84 @@ fat32_namelen(char *name)
   return len;
 }
 
-// Long-name fallback of fat32_lookup: scan the directory for an LFN
-// chain whose assembled name matches the query.
-static struct inode*
-fat32_lookup_lfn(struct inode *dp, char *name)
+// Unified directory locator: matches 8.3 short names, exact LFNs, or
+// DIRSIZ-truncated LFN aliases, recording any associated LFN slots.
+static int
+fat32_locate_entry(struct inode *dp, char *name, struct fat32_entry_loc *out)
 {
   struct fat32_fs *fs = (struct fat32_fs*)dp->mnt->fs_private;
   struct fat32_dirent de;
   struct fat32_lfn st;
+  struct fat32_entry_loc alias_loc;
+  uchar name83[11];
   char lname[DIRSIZ];
-  uint clus, next, pos, off;
-  int llen, qlen;
+  uint clus, next, pos, off, hops = 0;
+  uint lfn_offs[FAT32_MAX_LFN_SLOTS];
+  int lfn_cnt, llen, qlen, has_name83, has_lfn, has_alias = 0;
+
+  if(dp->type != T_DIR)
+    return -1;
 
   qlen = fat32_namelen(name);
+  has_name83 = (fat32_name83(name, name83) == 0);
   memset(&st, 0, sizeof(st));
   clus = dp->addrs[0];
   while(clus >= 2){
+    if(++hops > fs->nclus)
+      return -1;
     for(pos = 0; pos < fs->cluster_size; pos += sizeof(de)){
       off = fat32_clus_offset(fs, clus) + pos;
       if(fat32_read_entry(fs, off, &de) < 0)
-        return 0;
+        return -1;
       if(de.name[0] == 0x00)
-        return 0;
+        goto done;
       if(de.name[0] == 0xe5){
-        fat32_lfn_reset(&st);   // deleted entry breaks a chain
+        fat32_lfn_reset(&st);
         continue;
       }
       if((de.attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN){
-        fat32_lfn_feed(&st, &de);
+        fat32_lfn_feed(&st, &de, off);
         continue;
       }
       if(de.attr & FAT32_ATTR_VOL){
         fat32_lfn_reset(&st);
         continue;
       }
-      if(fat32_lfn_take(&st, &de, lname, &llen) &&
-         fat32_lfn_match(name, qlen, lname, llen))
-        return fat32_iget(dp->mnt, &de, off);
+      has_lfn = fat32_lfn_take(&st, &de, lname, &llen, lfn_offs, &lfn_cnt);
+      if((has_name83 && memcmp(de.name, name83, 11) == 0) ||
+         (has_lfn && llen <= DIRSIZ &&
+          fat32_lfn_match(name, qlen, lname, llen))){
+        if(out){
+          out->de = de;
+          out->entry_off = off;
+          out->lfn_cnt = lfn_cnt;
+          if(lfn_cnt > 0)
+            memmove(out->lfn_offs, lfn_offs, lfn_cnt * sizeof(uint));
+        }
+        return 0;
+      }
+      if(!has_alias && has_lfn && llen > DIRSIZ &&
+         fat32_lfn_match(name, qlen, lname, llen)){
+        has_alias = 1;
+        alias_loc.de = de;
+        alias_loc.entry_off = off;
+        alias_loc.lfn_cnt = lfn_cnt;
+        if(lfn_cnt > 0)
+          memmove(alias_loc.lfn_offs, lfn_offs, lfn_cnt * sizeof(uint));
+      }
     }
     if(fat32_read_fat(fs, clus, &next) < 0 || fat32_is_eoc(next))
       break;
     clus = next;
   }
-  return 0;
+
+done:
+  if(has_alias){
+    if(out)
+      *out = alias_loc;
+    return 0;
+  }
+  return -1;
 }
 
 static int
@@ -856,7 +972,7 @@ fat32_readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
   char name[DIRSIZ];
   char lname[DIRSIZ];
   uchar buf[BSIZE];
-  uint want, seen, clus, next, pos, deoff, m;
+  uint want, seen, clus, next, pos, deoff, m, hops = 0;
   int llen, has_lfn;
 
   if(ip->type == T_DIR){
@@ -867,6 +983,8 @@ fat32_readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
     memset(&lst, 0, sizeof(lst));
     clus = ip->addrs[0];
     while(clus >= 2){
+      if(++hops > fs->nclus)
+        return -1;
       for(pos = 0; pos < fs->cluster_size; pos += sizeof(de)){
         deoff = fat32_clus_offset(fs, clus) + pos;
         if(fat32_read_entry(fs, deoff, &de) < 0)
@@ -875,17 +993,20 @@ fat32_readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
           return 0;
         if((de.attr & FAT32_ATTR_LFN) == FAT32_ATTR_LFN &&
            de.name[0] != 0xe5){
-          fat32_lfn_feed(&lst, &de);
+          fat32_lfn_feed(&lst, &de, deoff);
           continue;
         }
         if(!fat32_is_valid_entry(&de)){
           fat32_lfn_reset(&lst);        // deleted/volume entry breaks a chain
           continue;
         }
-        has_lfn = fat32_lfn_take(&lst, &de, lname, &llen);
+        has_lfn = fat32_lfn_take(&lst, &de, lname, &llen, 0, 0);
         if(seen++ == want){
+          uint fclus = fat32_first_cluster(&de);
           memset(&xde, 0, sizeof(xde));
-          xde.inum = fat32_first_cluster(&de);
+          xde.inum = (ushort)(fclus ? fclus : ((deoff >> 5) | 1));
+          if(xde.inum == 0)
+            xde.inum = 1;
           if(has_lfn)
             memmove(xde.name, lname, fat32_min(llen, DIRSIZ));
           else {
@@ -933,27 +1054,46 @@ fat32_writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
   struct fat32_fs *fs = (struct fat32_fs*)ip->mnt->fs_private;
   uchar buf[BSIZE];
   uint tot, m, clus;
+  int err = 0;
 
-  if(ip->type != T_FILE || off + n < off)
+  if(ip->type != T_FILE || off > ip->size || off + n < off)
     return -1;
 
   for(tot = 0; tot < n; tot += m, off += m, src += m){
+    m = fat32_min(n - tot, fs->cluster_size - off % fs->cluster_size);
+    m = fat32_min(m, BSIZE);
+    // Copy from user space before allocating clusters so an invalid
+    // user pointer never leaks clusters or triggers unnecessary I/O.
+    if(either_copyin((char*)buf, user_src, src, m) < 0){
+      err = 1;
+      break;
+    }
+    if(ip->addrs[0] == 0){
+      clus = fat32_alloc_cluster(fs);
+      if(clus == 0)
+        break;
+      ip->addrs[0] = clus;
+      ip->addrs[2] = 0;
+      ip->addrs[3] = clus;
+    }
     clus = fat32_cluster_at(ip, off / fs->cluster_size, 1);
     if(clus == 0)
       break;
-    m = fat32_min(n - tot, fs->cluster_size - off % fs->cluster_size);
-    m = fat32_min(m, BSIZE);
-    if(either_copyin((char*)buf, user_src, src, m) < 0)
-      return -1;
     if(block_write_bytes(fs->dev,
                          fat32_clus_offset(fs, clus) + off % fs->cluster_size,
-                         buf, m) != m)
-      return -1;
+                         buf, m) != m){
+      err = 1;
+      break;
+    }
   }
 
   if(off > ip->size)
     ip->size = off;
-  if(fat32_sync_inode(ip) < 0)
+  if(tot > 0 || !err){
+    if(fat32_sync_inode(ip) < 0)
+      return -1;
+  }
+  if(err)
     return -1;
   return tot;
 }
@@ -988,10 +1128,12 @@ fat32_itrunc(struct inode *ip)
 
   if(ip->type != T_FILE)
     return;
-  acquiresleep(&fs->lock);
-  fat32_free_after(fs, ip->addrs[0]);
-  releasesleep(&fs->lock);
-  fat32_zero_cluster(fs, ip->addrs[0]);
+  if(ip->addrs[0] >= 2){
+    acquiresleep(&fs->lock);
+    fat32_free_after(fs, ip->addrs[0]);
+    releasesleep(&fs->lock);
+    fat32_zero_cluster(fs, ip->addrs[0]);
+  }
   ip->addrs[2] = 0;
   ip->addrs[3] = 0;
   ip->size = 0;
@@ -1003,6 +1145,7 @@ fat32_lookup(struct inode *dp, char *name)
 {
   uchar name83[11];
   struct fat32_dirent de;
+  struct fat32_entry_loc loc;
   uint entry_off;
 
   if(namecmp(name, ".") == 0)
@@ -1011,15 +1154,16 @@ fat32_lookup(struct inode *dp, char *name)
     memset(name83, ' ', sizeof(name83));
     name83[0] = '.';
     name83[1] = '.';
-    if(fat32_find_entry(dp, name83, &de, &entry_off) == 0)
+    if(fat32_find_entry(dp, name83, &de, &entry_off) == 0){
+      if(fat32_first_cluster(&de) == 0 && dp->mnt->root != 0)
+        return idup(dp->mnt->root);
       return fat32_iget(dp->mnt, &de, entry_off);
+    }
     return idup(dp);
   }
-  if(fat32_name83(name, name83) == 0 &&
-     fat32_find_entry(dp, name83, &de, &entry_off) == 0)
-    return fat32_iget(dp->mnt, &de, entry_off);
-  // Not found by the 8.3 name (or no 8.3 form): try long names.
-  return fat32_lookup_lfn(dp, name);
+  if(fat32_locate_entry(dp, name, &loc) < 0)
+    return 0;
+  return fat32_iget(dp->mnt, &loc.de, loc.entry_off);
 }
 
 static struct inode*
@@ -1041,7 +1185,7 @@ fat32_create(struct inode *dp, char *name, short type, short major, short minor)
     return 0;
   if(fat32_name83(name, name83) < 0)
     return 0;
-  if(fat32_find_entry(dp, name83, 0, 0) == 0)
+  if(fat32_locate_entry(dp, name, 0) == 0)
     return 0;
 
   clus = fat32_alloc_cluster(fs);
@@ -1050,7 +1194,7 @@ fat32_create(struct inode *dp, char *name, short type, short major, short minor)
 
   attr = type == T_DIR ? FAT32_ATTR_DIR : FAT32_ATTR_ARCH;
   if(fat32_add_entry(dp, name83, attr, clus, 0, &entry_off) < 0){
-    fat32_write_fat(fs, clus, 0);
+    fat32_free_chain(fs, clus);
     return 0;
   }
 
@@ -1067,13 +1211,13 @@ fat32_create(struct inode *dp, char *name, short type, short major, short minor)
     dotdot[1] = '.';
     if(fat32_add_entry(&tmp, dot, FAT32_ATTR_DIR, clus, 0, &dot_off) < 0){
       fat32_remove_entry(fs, entry_off);
-      fat32_write_fat(fs, clus, 0);
+      fat32_free_chain(fs, clus);
       return 0;
     }
     if(fat32_add_entry(&tmp, dotdot, FAT32_ATTR_DIR, dp->addrs[0], 0,
                        &dot_off) < 0){
       fat32_remove_entry(fs, entry_off);
-      fat32_write_fat(fs, clus, 0);
+      fat32_free_chain(fs, clus);
       return 0;
     }
   }
@@ -1091,10 +1235,12 @@ fat32_is_dir_empty(struct inode *ip)
 {
   struct fat32_fs *fs = (struct fat32_fs*)ip->mnt->fs_private;
   struct fat32_dirent de;
-  uint clus, next, pos, off;
+  uint clus, next, pos, off, hops = 0;
 
   clus = ip->addrs[0];
   while(clus >= 2){
+    if(++hops > fs->nclus)
+      return 0;
     for(pos = 0; pos < fs->cluster_size; pos += sizeof(de)){
       off = fat32_clus_offset(fs, clus) + pos;
       if(fat32_read_entry(fs, off, &de) < 0)
@@ -1119,17 +1265,14 @@ static int
 fat32_unlink(struct inode *dp, char *name)
 {
   struct fat32_fs *fs = (struct fat32_fs*)dp->mnt->fs_private;
-  struct fat32_dirent de;
+  struct fat32_entry_loc loc;
   struct inode *ip;
-  uchar name83[11];
-  uint entry_off;
+  int i;
 
-  if(fat32_name83(name, name83) < 0)
-    return -1;
-  if(fat32_find_entry(dp, name83, &de, &entry_off) < 0)
+  if(fat32_locate_entry(dp, name, &loc) < 0)
     return -1;
 
-  ip = fat32_iget(dp->mnt, &de, entry_off);
+  ip = fat32_iget(dp->mnt, &loc.de, loc.entry_off);
   if(ip == 0)
     return -1;
 
@@ -1145,10 +1288,14 @@ fat32_unlink(struct inode *dp, char *name)
     return -1;
   }
 
-  if(fat32_remove_entry(fs, entry_off) < 0){
+  // Delete the 8.3 entry before its LFN slots so a crash never leaves
+  // an orphaned short-name alias visible on disk.
+  if(fat32_remove_entry(fs, loc.entry_off) < 0){
     iunlockput(ip);
     return -1;
   }
+  for(i = 0; i < loc.lfn_cnt; i++)
+    fat32_remove_entry(fs, loc.lfn_offs[i]);
 
   // Clear the directory-slot offset so subsequent writes to an open
   // unlinked FD cannot corrupt a reused slot; cluster chain release

@@ -77,14 +77,20 @@ uartinit(void)
 // transmit buf[] to the uart. it blocks if the
 // uart is busy, so it cannot be called from
 // interrupts, only from write() system calls.
-void
+int
 uartwrite(char buf[], int n)
 {
+  struct proc *p = myproc();
+
   acquire(&tx_lock);
 
   int i = 0;
   while(i < n){ 
     while(tx_busy != 0){
+      if(p != 0 && killed(p)){
+        release(&tx_lock);
+        return i > 0 ? i : -1;
+      }
       // wait for a UART transmit-complete interrupt
       // to set tx_busy to 0.
       sleep(&tx_chan, &tx_lock);
@@ -96,6 +102,7 @@ uartwrite(char buf[], int n)
   }
 
   release(&tx_lock);
+  return i;
 }
 
 
@@ -107,7 +114,7 @@ void
 uartputc_sync(int c)
 {
   if(panicking == 0)
-    push_off();
+    acquire(&tx_lock);
 
   if(panicked){
     for(;;)
@@ -120,7 +127,24 @@ uartputc_sync(int c)
   WriteReg(THR, c);
 
   if(panicking == 0)
-    pop_off();
+    release(&tx_lock);
+}
+
+int
+uart_rx_pending(void)
+{
+  return (ReadReg(LSR) & LSR_RX_READY) != 0;
+}
+
+int
+uart_tx_pending(void)
+{
+  int pending;
+
+  acquire(&tx_lock);
+  pending = tx_busy && ((ReadReg(LSR) & LSR_TX_IDLE) != 0);
+  release(&tx_lock);
+  return pending;
 }
 
 // read one input character from the UART.

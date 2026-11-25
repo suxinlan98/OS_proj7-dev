@@ -13,7 +13,7 @@ if [ "$TEST_ARCH" != "riscv" ]; then
   CASE_NAME="${TEST_ARCH}_error"
 fi
 RAW_LOG="$LOG_DIR/qemu-error$LOG_SUFFIX.log"
-RESULT_LOG="$LOG_DIR/result.log"
+RESULT_LOG="$LOG_DIR/result$LOG_SUFFIX.log"
 
 mkdir -p "$LOG_DIR"
 

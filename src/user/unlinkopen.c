@@ -17,21 +17,21 @@ main(int argc, char *argv[])
   unlink(path);
 
   if((wfd = open(path, O_WRONLY | O_CREATE)) < 0){
-    printf("unlinkopen: open-for-write %s failed\n", path);
+    printf("unlinkopen: FAIL open-for-write %s\n", path);
     exit(1);
   }
   if(write(wfd, "hello", 5) != 5){
-    printf("unlinkopen: write failed\n");
+    printf("unlinkopen: FAIL write\n");
     exit(1);
   }
 
   if((rfd = open(path, O_RDONLY)) < 0){
-    printf("unlinkopen: open-for-read %s failed\n", path);
+    printf("unlinkopen: FAIL open-for-read %s\n", path);
     exit(1);
   }
 
   if(unlink(path) < 0){
-    printf("unlinkopen: unlink %s failed\n", path);
+    printf("unlinkopen: FAIL unlink %s\n", path);
     exit(1);
   }
 

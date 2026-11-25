@@ -39,7 +39,7 @@ kvminithart(void)
 }
 
 void
-kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, int perm)
+kvmmap(pagetable_t kpgtbl, uint64 va, uint64 pa, uint64 sz, uint64 perm)
 {
   perm |= PTE_P | PTE_D | PTE_MAT;
   if(mappages(kpgtbl, va, sz, pa, perm) != 0)
@@ -98,7 +98,7 @@ ismapped(pagetable_t pagetable, uint64 va)
 }
 
 int
-mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
+mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, uint64 perm)
 {
   uint64 a, last;
   pte_t *pte;
@@ -138,11 +138,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
-      uint64 pa = PTE2PA(*pte);    
-      kfree((void*)(pa | DMWIN_MASK));
-    }
+    uint64 pa = PTE2PA(*pte);
     *pte = 0;
+    invtlb_va(a);
+    if(do_free)
+      kfree((void*)(pa | DMWIN_MASK));
   }
 }
 
@@ -171,12 +171,14 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 }
 
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
+uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, uint64 xperm)
 {
   char *mem;
   uint64 a;
   uint64 perm;
 
+  if(newsz >= TRAPFRAME)
+    return 0;
   if(newsz < oldsz)
     return oldsz;
 
@@ -221,7 +223,7 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
     return 0;
   memset(mem, 0, PGSIZE);
   if(mappages(pagetable, va, PGSIZE, (uint64)mem,
-              PTE_P|PTE_W|PTE_PLV|PTE_MAT|PTE_D) != 0){
+              PTE_P|PTE_W|PTE_PLV|PTE_MAT|PTE_D|PTE_NX) != 0){
     kfree(mem);
     return 0;
   }
@@ -272,7 +274,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
+  uint64 flags;
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
@@ -316,6 +318,8 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+    if(va0 >= MAXVA)
+      return -1;
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0){
       if((pa0 = vmfault(pagetable, va0, 0)) == 0)

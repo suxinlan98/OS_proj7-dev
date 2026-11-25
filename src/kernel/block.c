@@ -19,7 +19,7 @@ block_read_bytes(uint dev, uint off, uchar *dst, uint n)
   struct buf *bp;
   uint m, tot;
 
-  if(dst == 0 && n != 0)
+  if((dst == 0 && n != 0) || off + n < off)
     return -1;
 
   for(tot = 0; tot < n; tot += m, off += m){
@@ -38,7 +38,7 @@ block_write_bytes(uint dev, uint off, uchar *src, uint n)
   struct buf *bp;
   uint m, tot;
 
-  if(src == 0 && n != 0)
+  if((src == 0 && n != 0) || off + n < off)
     return -1;
 
   for(tot = 0; tot < n; tot += m, off += m){

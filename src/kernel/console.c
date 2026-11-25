@@ -66,9 +66,13 @@ consolewrite(int user_src, uint64 src, int n)
     if(nn > n - i)
       nn = n - i;
     if(either_copyin(buf, user_src, src+i, nn) == -1)
+      return i > 0 ? i : -1;
+    int w = uartwrite(buf, nn);
+    if(w < 0)
+      return i > 0 ? i : -1;
+    i += w;
+    if(w < nn)
       break;
-    uartwrite(buf, nn);
-    i += nn;
   }
 
   return i;
@@ -100,7 +104,8 @@ consoleread(int user_dst, uint64 dst, int n)
       sleep(&cons.r, &cons.lock);
     }
 
-    c = cons.buf[cons.r++ % INPUT_BUF_SIZE];
+    uint rpos = cons.r++;
+    c = cons.buf[rpos % INPUT_BUF_SIZE];
 
     if(c == C('D')){  // end-of-file
       if(n < target){
@@ -111,10 +116,17 @@ consoleread(int user_dst, uint64 dst, int n)
       break;
     }
 
-    // copy the input byte to the user-space buffer.
+    // Release cons.lock before copying to user space so page faults
+    // cannot block RX interrupts or drop characters on error.
     cbuf = c;
-    if(either_copyout(user_dst, dst, &cbuf, 1) == -1)
-      break;
+    release(&cons.lock);
+    if(either_copyout(user_dst, dst, &cbuf, 1) == -1){
+      acquire(&cons.lock);
+      if(cons.r == rpos + 1 && cons.e - rpos <= INPUT_BUF_SIZE)
+        cons.r = rpos;
+      release(&cons.lock);
+      return (target - n) > 0 ? (int)(target - n) : -1;
+    }
 
     dst++;
     --n;
@@ -122,8 +134,10 @@ consoleread(int user_dst, uint64 dst, int n)
     if(c == '\n'){
       // a whole line has arrived, return to
       // the user-level read().
-      break;
+      return target - n;
     }
+
+    acquire(&cons.lock);
   }
   release(&cons.lock);
 
@@ -139,12 +153,14 @@ consoleread(int user_dst, uint64 dst, int n)
 void
 consoleintr(int c)
 {
+  if(c == C('P')){  // Print process list without holding cons.lock.
+    procdump();
+    return;
+  }
+
   acquire(&cons.lock);
 
   switch(c){
-  case C('P'):  // Print process list.
-    procdump();
-    break;
   case C('U'):  // Kill line.
     while(cons.e != cons.w &&
           cons.buf[(cons.e-1) % INPUT_BUF_SIZE] != '\n'){

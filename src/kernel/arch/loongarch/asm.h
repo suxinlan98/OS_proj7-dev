@@ -14,3 +14,5 @@
 #define LOONGARCH_CSR_TLBRENTRY		0x88	/* TLB refill exception entry */
 #define LOONGARCH_CSR_TLBRBADV		0x89	/* TLB refill badvaddr */
 #define LOONGARCH_CSR_TLBRSAVE		0x8b	/* KScratch for TLB refill exception */
+#define LOONGARCH_CSR_TLBRELO0		0x8c	/* TLB refill EntryLo0 */
+#define LOONGARCH_CSR_TLBRELO1		0x8d	/* TLB refill EntryLo1 */

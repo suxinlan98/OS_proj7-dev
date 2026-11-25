@@ -15,7 +15,7 @@ int test_cross_fs_copy() {
     return 1;
   }
 
-  int dst_fd = open(DST_FILENAME, O_WRONLY | O_CREATE);
+  int dst_fd = open(DST_FILENAME, O_WRONLY | O_CREATE | O_TRUNC);
   if(dst_fd < 0) {
     printf("错误: 无法创建目标文件 %s\n", DST_FILENAME);
     printf("请先执行 mount\n");
@@ -45,20 +45,38 @@ int test_cross_fs_copy() {
   printf("✓ 文件复制成功！\n\n");
 
   printf("验证复制结果:\n");
+  src_fd = open(SRC_FILENAME, O_RDONLY);
   int fd = open(DST_FILENAME, O_RDONLY);
-  if(fd < 0) {
-    printf("✗ 无法打开复制的文件\n");
+  if(src_fd < 0 || fd < 0) {
+    printf("test2: error cannot open files for verify\n");
+    if(src_fd >= 0) close(src_fd);
+    if(fd >= 0) close(fd);
     return 5;
   }
 
   static char verify_buf[256];
-  int verify_n = read(fd, verify_buf, sizeof(verify_buf) - 1);
-  if(verify_n < 0) {
-    printf("✗ 读取复制的文件失败\n");
-    close(fd);
-    return 6;
+  char src_cmp[256], dst_cmp[256];
+  int sn, dn, shown = 0;
+  verify_buf[0] = '\0';
+  for(;;) {
+    sn = read(src_fd, src_cmp, sizeof(src_cmp));
+    dn = read(fd, dst_cmp, sizeof(dst_cmp));
+    if(sn < 0 || dn < 0 || sn != dn || (sn > 0 && memcmp(src_cmp, dst_cmp, sn) != 0)) {
+      printf("test2: error content mismatch\n");
+      close(src_fd);
+      close(fd);
+      return 6;
+    }
+    if(sn == 0)
+      break;
+    if(!shown) {
+      int k = sn < (int)sizeof(verify_buf) - 1 ? sn : (int)sizeof(verify_buf) - 1;
+      memmove(verify_buf, dst_cmp, k);
+      verify_buf[k] = '\0';
+      shown = 1;
+    }
   }
-  verify_buf[verify_n] = '\0';
+  close(src_fd);
   close(fd);
 
   printf("✓ 复制成功！文件内容: \n%s\n", verify_buf);
@@ -70,8 +88,9 @@ int test_cross_fs_copy() {
 }
 
 int main(int argc, char *argv[]) {
+  int rc;
   printf("\n--------- %s: begin... ---------------------{\n", argv[0]);
-  test_cross_fs_copy();
+  rc = test_cross_fs_copy();
   printf("--------- %s: finished -------------------}\n", argv[0]);
-  return 0;
+  return rc;
 }

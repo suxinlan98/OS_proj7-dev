@@ -134,6 +134,12 @@ vfs_init_inode(struct inode *ip)
   ip->ops = &xv6_inode_ops;
 }
 
+static int
+vfs_valid_mount_dev(int dev)
+{
+  return dev == EXT2DEV || dev == FAT32DEV;
+}
+
 int
 vfs_mount(char *fstype, char *path, int dev)
 {
@@ -144,7 +150,7 @@ vfs_mount(char *fstype, char *path, int dev)
   char name[DIRSIZ];
   int free, i;
 
-  if(fstype == 0 || path == 0 || dev <= 0)
+  if(fstype == 0 || path == 0 || !vfs_valid_mount_dev(dev))
     return -1;
 
   type = vfs_parse_fstype(fstype);
@@ -213,6 +219,7 @@ vfs_mount(char *fstype, char *path, int dev)
       continue;
     }
     if(mnt->fstype == type ||
+       mnt->dev == dev ||
        (mnt->mountpoint != 0 &&
         mnt->mountpoint->dev == mp->dev &&
         mnt->mountpoint->inum == mp->inum) ||

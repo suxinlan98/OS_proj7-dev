@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -154,6 +155,7 @@ def main():
 
     def wait_for_sentinel(marker, start_offset, timeout):
         end = time.time() + timeout
+        out_re = re.compile(rf"(?:^|[\r\n])(?:\$ )?{re.escape(marker)}\r?\n")
         while time.time() < end:
             drain(0.15)
             current = text()
@@ -161,9 +163,10 @@ def main():
             if hit:
                 return False, "Rejected output: " + ", ".join(hit)
             tail = log[start_offset:].decode("utf-8", "replace")
-            # Marker appears once in console input echo ("echo <marker>")
-            # and a second time when echo executes after the command finishes.
-            if tail.count(marker) >= 2:
+            # Match either a clean standalone marker line (robust even if the
+            # queued "echo <marker>" input echo was split by command output) or
+            # two occurrences (input echo + output, robust against '&' output).
+            if out_re.search(tail) or tail.count(marker) >= 2:
                 # Give sh a brief moment to emit the next "$ " prompt.
                 settle_end = time.time() + 1.0
                 while time.time() < settle_end:
@@ -295,12 +298,31 @@ def main():
                 qemu.wait(timeout=1.5)
         except Exception:
             pass
+        # Unconditionally signal the entire process group (pgid == qemu.pid
+        # from os.setsid) so orphaned qemu-system-* children are reaped even
+        # when the parent make process has already exited.
         try:
-            if qemu.poll() is None:
-                os.killpg(os.getpgid(qemu.pid), signal.SIGTERM)
+            os.killpg(qemu.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
         except Exception:
             pass
-        time.sleep(0.2)
+        try:
+            qemu.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+        try:
+            os.killpg(qemu.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
+        try:
+            qemu.wait(timeout=2.0)
+        except Exception:
+            pass
         with open(args.log, "wb") as f:
             f.write(log)
 

@@ -26,6 +26,11 @@ extern int devintr();
 #define LA_ECODE_ADE 0x8
 #define LA_ECODE_SYS 0xb
 
+#define LA_TIMER_PERIOD_10MS 1000000UL
+#define LA_TIMER_SUBTICKS    10
+
+static uint timer_subticks;
+
 static int
 la_page_fault(uint32 ecode, int *read)
 {
@@ -35,11 +40,6 @@ la_page_fault(uint32 ecode, int *read)
   }
   if(ecode == LA_ECODE_PIS){
     *read = 0;
-    return 1;
-  }
-  if(ecode == LA_ECODE_PIF || ecode == LA_ECODE_PME ||
-     ecode == LA_ECODE_PPI || ecode == LA_ECODE_ADE){
-    *read = ecode == LA_ECODE_PIF;
     return 1;
   }
   return 0;
@@ -54,8 +54,9 @@ trapinit(void)
 void
 trapinithart(void)
 {
-  uint32 ecfg = (0U << CSR_ECFG_VS_SHIFT) | HWI_VEC | TI_VEC;
-  uint64 tcfg = 0x1000000UL | CSR_TCFG_EN | CSR_TCFG_PER;
+  uint32 ecfg = (0U << CSR_ECFG_VS_SHIFT) | HWI_VEC | TI_VEC | IPI_VEC;
+  uint64 tcfg = LA_TIMER_PERIOD_10MS | CSR_TCFG_EN | CSR_TCFG_PER;
+  iocsr_writel(0xffffffffU, LOONGARCH_IOCSR_IPI_EN);
   w_csr_ecfg(ecfg);
   w_csr_tcfg(tcfg);
   w_csr_eentry((uint64)kernelvec);
@@ -81,7 +82,7 @@ usertrap(void)
   ecode = (r_csr_estat() & CSR_ESTAT_ECODE) >> 16;
   
   if(ecode == LA_ECODE_SYS){
-    if(p->killed)
+    if(killed(p))
       kexit(-1);
 
     p->trapframe->era += 4;
@@ -97,10 +98,10 @@ usertrap(void)
     printf("            era=0x%lx badv=0x%lx badi=0x%x sp=0x%lx crmd=0x%x prmd=0x%x\n",
            r_csr_era(), r_csr_badv(), r_csr_badi(), p->trapframe->sp,
            r_csr_crmd(), r_csr_prmd());
-    p->killed = 1;
+    setkilled(p);
   }
 
-  if(p->killed)
+  if(killed(p))
     kexit(-1);
 
   if(which_dev == 2)
@@ -154,7 +155,7 @@ kerneltrap()
     panic("kerneltrap");
   }
 
-  if(which_dev == 2 && myproc() != 0 && myproc()->state == RUNNING)
+  if(which_dev == 2 && myproc() != 0)
     yield();
 
   w_csr_era(era);
@@ -181,42 +182,64 @@ devintr()
 {
   uint32 estat = r_csr_estat();
   uint32 ecfg = r_csr_ecfg();
+  uint32 pending = estat & ecfg;
+  int ret = 0;
 
-  if(estat & ecfg & HWI_VEC) {
+  if(pending & HWI_VEC) {
     uint64 irq = hal_irq_claim();
-    if(irq & (1UL << UART0_IRQ)){
-      uartintr();
+    uint64 handled = 0;
 
-      hal_irq_complete(1UL << UART0_IRQ);
-    } else if(irq & (1UL << VIRTIO0_IRQ)){
+    if(irq & (1UL << UART0_IRQ)){
+      handled |= (1UL << UART0_IRQ);
+      // UART0 is edge-triggered at the LS7A APIC; drain and re-check
+      // after ACK so a late RX byte or TX-idle edge is never lost.
+      do {
+        uartintr();
+        hal_irq_complete(1UL << UART0_IRQ);
+      } while(uart_rx_pending() || uart_tx_pending());
+    }
+    if(irq & (1UL << VIRTIO0_IRQ)){
+      handled |= (1UL << VIRTIO0_IRQ);
       // With legacy INTx signalling, a completion that arrives while
       // the previous one is being acknowledged can be swallowed by
-      // the APIC/EXTIOI chain (the line never drops, so nothing new
-      // is raised).  Loop until every posted completion has been
-      // processed, otherwise the waiter on the disk buffer would
-      // sleep forever.
+      // the APIC/EXTIOI chain.  Loop until every posted completion has
+      // been processed.
       do {
         virtio_disk_intr();
         hal_irq_complete(1UL << VIRTIO0_IRQ);
       } while(virtio_disk_pending());
-    } else if(irq){
-       printf("unexpected interrupt irq=0x%lx\n", irq);
-       hal_irq_complete(irq);
+    }
+    if(irq & ~handled){
+      uint64 unknown = irq & ~handled;
+      printf("unexpected interrupt irq=0x%lx\n", unknown);
+      hal_irq_complete(unknown);
     }
 
-    return 1;
-  } else if(estat & ecfg & TI_VEC){
+    ret = 1;
+  }
+
+  if(pending & IPI_VEC){
+    uint32 status = iocsr_readl(LOONGARCH_IOCSR_IPI_STATUS);
+    if(status)
+      iocsr_writel(status, LOONGARCH_IOCSR_IPI_CLEAR);
+    if(ret == 0)
+      ret = 1;
+  }
+
+  if(pending & TI_VEC){
     if(cpuid() == 0){
-      clockintr();
+      if(++timer_subticks >= LA_TIMER_SUBTICKS){
+        timer_subticks = 0;
+        clockintr();
+      }
       // Backstop for lost virtio completion interrupts: the timer
       // does not depend on the external interrupt chain.
       virtio_disk_watchdog();
     }
 
     w_csr_ticlr(r_csr_ticlr() | CSR_TICLR_CLR);
-
-    return 2;
-  } else {
-    return 0;
+    ret = 2;
   }
+
+  return ret;
 }

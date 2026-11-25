@@ -27,8 +27,9 @@ void            hal_disk_init(void);
 void            hal_disk_rw(struct buf*, int);
 void            hal_intr_init(void);
 void            hal_intr_inithart(void);
-int             hal_irq_claim(void);
-void            hal_irq_complete(int);
+uint64          hal_irq_claim(void);
+void            hal_irq_complete(uint64);
+void            hal_send_ipi(int);
 
 // LoongArch platform helpers.
 void            apicinit(void);
@@ -190,17 +191,19 @@ void            prepare_return(void);
 // uart.c
 void            uartinit(void);
 void            uartintr(void);
-void            uartwrite(char [], int);
+int             uartwrite(char [], int);
 void            uartputc_sync(int);
 int             uartgetc(void);
+int             uart_rx_pending(void);
+int             uart_tx_pending(void);
 
 // vm.c
 void            kvminit(void);
 void            kvminithart(void);
-void            kvmmap(pagetable_t, uint64, uint64, uint64, int);
-int             mappages(pagetable_t, uint64, uint64, uint64, int);
+void            kvmmap(pagetable_t, uint64, uint64, uint64, uint64);
+int             mappages(pagetable_t, uint64, uint64, uint64, uint64);
 pagetable_t     uvmcreate(void);
-uint64          uvmalloc(pagetable_t, uint64, uint64, int);
+uint64          uvmalloc(pagetable_t, uint64, uint64, uint64);
 uint64          uvmdealloc(pagetable_t, uint64, uint64);
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
 void            uvmfree(pagetable_t, uint64);
