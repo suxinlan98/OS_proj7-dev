@@ -1,0 +1,74 @@
+name: Full Regression
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily at 03:00 UTC (11:00 CST)
+    - cron: '0 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  full-usertests:
+    name: Full usertests (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [riscv, loongarch]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-xv6-toolchain
+
+      - name: Run full usertests (CPUS=3, no -q)
+        run: bash tests/full_usertests.sh "${{ matrix.arch }}"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-usertests-logs-${{ matrix.arch }}
+          path: tests/test_baseline/logs/
+          if-no-files-found: ignore
+
+  crash-recovery:
+    name: WAL Crash Recovery (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [riscv, loongarch]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup toolchain
+        uses: ./.github/actions/setup-xv6-toolchain
+
+      - name: Run test-xv6.py crash
+        working-directory: src
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          make ARCH="$ARCH" clean
+          make ARCH="$ARCH" kernel/kernel fs.img
+          python3 test-xv6.py crash
+
+  docker-build:
+    name: Docker Image Build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Dockerfile
+        run: docker build --progress=plain -t xv6-microkernel:ci .
