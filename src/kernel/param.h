@@ -6,7 +6,7 @@
 #define NDEV         10  // maximum major device number
 #define ROOTDEV       1  // device number of file system root disk
 #define EXT2DEV       2  // logical device number of ext2 disk image
-#define EXT2SIZE   4096  // ext2 image size in xv6 blocks
+#define EXT2SIZE   8192  // ext2 image size in xv6 blocks
 #define FAT32DEV      3  // logical device number of fat32 disk image
 #define MAXARG       32  // max exec arguments
 #define MAXOPBLOCKS  10  // max # of blocks any FS op writes

@@ -8,14 +8,10 @@ mkdir /mnt
 mkdir /fat
 mount ext2 /mnt
 mount fat32 /fat
-bigfile /mnt/a keep &
-bigfile /mnt/b keep &
-bigfile /mnt/solo
+bigfile /mnt/solo parallel /mnt/a /mnt/b
 bigfile /mnt/a verify
 bigfile /mnt/b verify
-bigfile /fat/a keep &
-bigfile /fat/b keep &
-bigfile /fat/solo
+bigfile /fat/solo parallel /fat/a /fat/b
 bigfile /fat/a verify
 bigfile /fat/b verify
 cd /mnt

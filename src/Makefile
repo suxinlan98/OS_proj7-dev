@@ -230,7 +230,7 @@ UPROGS=\
 	$U/_dorphan\
 
 EXT2IMG = ext2.img
-EXT2_BLOCKS = 4096
+EXT2_BLOCKS := $(shell awk '/^#define[[:space:]]+EXT2SIZE/{print $$3}' $K/param.h)
 FAT32IMG = fat32.img
 
 $(EXT2IMG): hello.c $K/param.h

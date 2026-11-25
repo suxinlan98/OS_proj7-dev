@@ -88,20 +88,58 @@ def main():
                         sys.stdout.buffer.write(chunk)
                         sys.stdout.buffer.flush()
                 else:
-                    time.sleep(0.05)
+                    # EOF on QEMU stdout pipe
+                    break
             except BlockingIOError:
+                if qemu.poll() is not None:
+                    break
                 time.sleep(0.05)
+
+    def drain_nowait():
+        while True:
+            try:
+                chunk = os.read(qemu.stdout.fileno(), 4096)
+                if not chunk:
+                    break
+                log.extend(chunk)
+                if args.live:
+                    sys.stdout.buffer.write(chunk)
+                    sys.stdout.buffer.flush()
+            except BlockingIOError:
+                break
 
     def text():
         return log.decode("utf-8", "replace")
 
-    def wait_for_idle_prompt(timeout):
+    def find_rejected(current):
+        return [pattern for pattern in args.reject if pattern in current]
+
+    def send_command(line):
+        try:
+            qemu.stdin.write((line + "\n").encode("utf-8"))
+            qemu.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError):
+            drain_nowait()
+            return False
+
+    def wait_for_initial_prompt(timeout):
         end = time.time() + timeout
         quiet_since = None
         while time.time() < end:
             before = len(log)
-            drain(0.2)
+            drain(0.15)
             current = text()
+            hit = find_rejected(current)
+            if hit:
+                return False, "Rejected output: " + ", ".join(hit)
+            if qemu.poll() is not None:
+                drain_nowait()
+                current = text()
+                hit = find_rejected(current)
+                if hit:
+                    return False, "Rejected output: " + ", ".join(hit)
+                return False, f"QEMU exited unexpectedly (rc={qemu.returncode})"
             if len(log) != before:
                 quiet_since = None
                 continue
@@ -110,18 +148,48 @@ def main():
                 continue
             if quiet_since is None:
                 quiet_since = time.time()
-            if time.time() - quiet_since >= 0.5:
-                return True
-        return False
+            if time.time() - quiet_since >= 0.3:
+                return True, ""
+        return False, "Initial shell prompt timeout"
+
+    def wait_for_sentinel(marker, start_offset, timeout):
+        end = time.time() + timeout
+        while time.time() < end:
+            drain(0.15)
+            current = text()
+            hit = find_rejected(current)
+            if hit:
+                return False, "Rejected output: " + ", ".join(hit)
+            tail = log[start_offset:].decode("utf-8", "replace")
+            # Marker appears once in console input echo ("echo <marker>")
+            # and a second time when echo executes after the command finishes.
+            if tail.count(marker) >= 2:
+                # Give sh a brief moment to emit the next "$ " prompt.
+                settle_end = time.time() + 1.0
+                while time.time() < settle_end:
+                    if text().rstrip().endswith("$"):
+                        break
+                    drain(0.05)
+                return True, ""
+            if qemu.poll() is not None:
+                drain_nowait()
+                current = text()
+                hit = find_rejected(current)
+                if hit:
+                    return False, "Rejected output: " + ", ".join(hit)
+                return False, f"QEMU exited unexpectedly (rc={qemu.returncode})"
+        return False, "Command prompt timeout"
 
     result = "PASS"
     failed_reason = ""
 
     try:
         drain(args.boot_wait)
-        if args.prompt_wait and not wait_for_idle_prompt(args.cmd_timeout):
-            result = "FAIL"
-            failed_reason = "Initial shell prompt timeout"
+        if args.prompt_wait:
+            ok, reason = wait_for_initial_prompt(args.cmd_timeout)
+            if not ok:
+                result = "FAIL"
+                failed_reason = reason
         for idx, command in enumerate(commands, 1):
             if result != "PASS":
                 break
@@ -130,33 +198,55 @@ def main():
             if args.prompt_wait and command.endswith("&"):
                 # Leave an intentional race window for the next foreground
                 # command; that command will wait for the shell to settle.
-                qemu.stdin.write((command + "\n").encode("utf-8"))
-                qemu.stdin.flush()
+                if not send_command(command):
+                    result = "FAIL"
+                    failed_reason = f"QEMU stdin closed while sending: {command}"
+                    break
                 drain(args.step_wait)
             elif args.prompt_wait:
-                # Wait until the guest is both idle (no new output for
-                # a short settle window) and sitting at a fresh shell
-                # prompt.  Counting prompts is not enough: with '&'
-                # background jobs the shell can re-prompt while earlier
-                # work is still running.
-                qemu.stdin.write((command + "\n").encode("utf-8"))
-                qemu.stdin.flush()
-                prompt_ready = wait_for_idle_prompt(args.cmd_timeout)
+                if not send_command(command):
+                    result = "FAIL"
+                    failed_reason = f"QEMU stdin closed while sending: {command}"
+                    break
+                # Wait briefly for the guest shell to consume the command line
+                # before queueing the short sentinel command (128B UART buffer).
+                cmd_echo_end = time.time() + 1.0
+                cmd_start = len(log)
+                while time.time() < cmd_echo_end:
+                    drain(0.05)
+                    if command in log[cmd_start:].decode("utf-8", "replace"):
+                        break
+                    if qemu.poll() is not None:
+                        break
+                marker = f"__XV6_DONE_{idx:03d}__"
+                marker_offset = len(log)
+                if not send_command(f"echo {marker}"):
+                    result = "FAIL"
+                    failed_reason = f"QEMU stdin closed after command: {command}"
+                    break
+                prompt_ready, reason = wait_for_sentinel(
+                    marker, marker_offset, args.cmd_timeout
+                )
                 if os.environ.get("RUNNER_DEBUG"):
                     print(f"    [prompt-wait] ready={prompt_ready} "
                           f"at {len(text())} bytes",
                           flush=True)
                 if not prompt_ready:
                     result = "FAIL"
-                    failed_reason = f"Command prompt timeout: {command}"
+                    failed_reason = (
+                        f"{reason}: {command}"
+                        if reason == "Command prompt timeout"
+                        else reason
+                    )
                     break
-                drain(0.2)
             else:
-                qemu.stdin.write((command + "\n").encode("utf-8"))
-                qemu.stdin.flush()
+                if not send_command(command):
+                    result = "FAIL"
+                    failed_reason = f"QEMU stdin closed while sending: {command}"
+                    break
                 drain(args.step_wait)
             current = text()
-            hit = [pattern for pattern in args.reject if pattern in current]
+            hit = find_rejected(current)
             if hit:
                 result = "FAIL"
                 failed_reason = "Rejected output: " + ", ".join(hit)
@@ -167,15 +257,23 @@ def main():
             end = time.time() + args.final_wait
             while time.time() < end:
                 current = text()
+                if find_rejected(current):
+                    break
                 counts_ok = all(current.count(pattern) == count
                                 for pattern, count in expected_counts)
                 if (all(pattern in current for pattern in args.expect)
                         and counts_ok):
                     break
-                if any(pattern in current for pattern in args.reject):
+                if qemu.poll() is not None:
+                    drain_nowait()
                     break
                 drain(0.5)
+        drain_nowait()
         current = text()
+        hit = find_rejected(current)
+        if hit and result == "PASS":
+            result = "FAIL"
+            failed_reason = "Rejected output: " + ", ".join(hit)
         if result == "PASS":
             missing = [pattern for pattern in args.expect if pattern not in current]
             if missing:

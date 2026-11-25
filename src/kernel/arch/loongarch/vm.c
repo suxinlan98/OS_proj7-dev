@@ -8,6 +8,8 @@
 #include "fs.h"
 #include "proc.h"
 
+pagetable_t kernel_pagetable;
+
 void
 tlbinit(void)
 {
@@ -20,22 +22,19 @@ tlbinit(void)
 void
 kvminit(void)
 {
-  pagetable_t kpgtbl;
-
-  kpgtbl = (pagetable_t) kalloc();
-  memset(kpgtbl, 0, PGSIZE);
-  proc_mapstacks(kpgtbl);
-
-  w_csr_pgdl((uint64)kpgtbl);
-  tlbinit();
-
-  w_csr_pwcl((PTEWIDTH << 30)|(DIR2WIDTH << 25)|(DIR2BASE << 20)|(DIR1WIDTH << 15)|(DIR1BASE << 10)|(PTWIDTH << 5)|(PTBASE << 0));
-  w_csr_pwch((DIR4WIDTH << 18)|(DIR3WIDTH << 6)|(DIR3BASE << 0));
+  kernel_pagetable = (pagetable_t) kalloc();
+  if(kernel_pagetable == 0)
+    panic("kvminit");
+  memset(kernel_pagetable, 0, PGSIZE);
+  proc_mapstacks(kernel_pagetable);
 }
 
 void
 kvminithart(void)
 {
+  w_csr_pgdl((uint64)kernel_pagetable);
+  w_csr_pwcl((PTEWIDTH << 30)|(DIR2WIDTH << 25)|(DIR2BASE << 20)|(DIR1WIDTH << 15)|(DIR1BASE << 10)|(PTWIDTH << 5)|(PTBASE << 0));
+  w_csr_pwch((DIR4WIDTH << 18)|(DIR3WIDTH << 6)|(DIR3BASE << 0));
   tlbinit();
 }
 

@@ -49,19 +49,18 @@ void
 trapinit(void)
 {
   initlock(&tickslock, "time");
-  uint32 ecfg = ( 0U << CSR_ECFG_VS_SHIFT ) | HWI_VEC | TI_VEC;
+}
+
+void
+trapinithart(void)
+{
+  uint32 ecfg = (0U << CSR_ECFG_VS_SHIFT) | HWI_VEC | TI_VEC;
   uint64 tcfg = 0x1000000UL | CSR_TCFG_EN | CSR_TCFG_PER;
   w_csr_ecfg(ecfg);
   w_csr_tcfg(tcfg);
   w_csr_eentry((uint64)kernelvec);
   w_csr_tlbrentry((uint64)handle_tlbr);
   w_csr_merrentry((uint64)handle_merr);
-  intr_on();
-}
-
-void
-trapinithart(void)
-{
 }
 
 void

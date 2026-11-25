@@ -498,6 +498,8 @@ virtio_disk_intr()
 int
 virtio_disk_pending(void)
 {
+  if(disk.used == 0)
+    return 0;
   __sync_synchronize();
   return disk.used_idx != disk.used->idx;
 }
