@@ -4,7 +4,7 @@
 
 Run the narrowest verification tier that matches the change:
 
-- **Tier 0 (every code edit)**: Compile both targets serially via `make -C src ARCH=riscv kernel/kernel && make -C src ARCH=loongarch kernel/kernel` (run `bash tests/check_env.sh` if toolchain setup changed, and run the kernel-IPC purity static check once `src/kernel/ipc.c` exists).
+- **Tier 0 (every code edit)**: Compile both targets serially via `make -C src ARCH=riscv kernel/kernel && make -C src ARCH=loongarch kernel/kernel`, and run `python3 .github/scripts/check_repo.py` (run `bash tests/check_env.sh` if toolchain setup changed).
 - **Tier 1 (subsystem or feature change)**: Run the matching focused QEMU suite on **both** architectures serially (`make <suite> && make run`, then `make loongarch_<suite> && make run`; note baseline targets are `test_baseline` and `loongarch_baseline`; other suites: `public_vfs`, `ext2`, `fat32`, `error`, `semantics`, `persist`, `smp`, `mount_lifecycle`, `remount_io`, `mount_storm`). For changes strictly confined to one architecture's HAL, you may iterate on that architecture first, then verify both before finishing.
 - **Tier 2 (pre-PR or milestone only)**: Full dual-architecture regression via `make verify-all`, plus `python3 test-xv6.py crash` inside `src/` when modifying logging or crash recovery.
 
@@ -16,6 +16,8 @@ If only docs or comments changed, skip Tier 1 and Tier 2 unless requested. `src/
 - **Single default boot path**: Keep the kernel and core services on one default build/boot path. Put tests in user programs or host scripts, with at most one lightweight switch for fault injection; do not scatter test-only `BOOT_MODE` branches across core logic.
 - **Pure kernel IPC**: The kernel IPC layer owns transport, capability/endpoint routing, and isolation mechanics only—zero filesystem, block, or console policy, opcodes, or structs.
 - **Root-cause fixes & honest verification**: When a test script or check fails, diagnose and fix the underlying root cause in the implementation (or a demonstrably broken harness bug). Never patch code to game test-script assertions, hardcode expected outputs, weaken `-Werror`, alter inherited test assertions, silently fall back to in-kernel subsystems, or inflate timeouts to mask scheduling/IRQ hangs.
+- **No string-collision false positives in tests**: Never let test expectations pass by matching echoed command text, prompts, banners, help text, or built-in program strings. Use distinct runtime tokens, exact `--expect-count`, or content readback/checksum verification so assertions prove real execution.
+- **Two-strike revert rule**: If two consecutive fix attempts for the same issue fail, revert the current patch back to a clean state and re-analyze the root cause from scratch—never keep stacking speculative patches on top of failed attempts.
 - **Critical engineering judgment**: Never treat user prompts or existing assumptions as unquestionable truth. When a requested approach has technical flaws, hidden hardware/concurrency traps, or a simpler, safer design, push back directly with evidence and propose the better alternative; if the user explicitly confirms an override after trade-offs are clear, follow their direction.
 
 ## Git, Prompts, and Maintenance Rules
