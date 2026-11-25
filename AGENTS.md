@@ -37,6 +37,6 @@ If only docs or comments changed, skip Tier 1 and Tier 2 unless requested. `src/
 | File | Contains | When to Read |
 | :--- | :--- | :--- |
 | `docs/architecture/README.md` | Microkernel topology, IPC/capability ABI, service state ownership, and recovery contracts | Before changing syscalls, IPC ABI, service boundaries, or recovery semantics |
-| `docs/baseline_debug.md` | Verified baseline bugs, dual-arch QEMU/hardware landmines, and migration traps | Before debugging build/runtime failures or migrating subsystems to user space |
+| `docs/baseline/README.md` | Verified baseline bugs (`bugs.md`), dual-arch QEMU/hardware landmines, and migration traps (`traps.md`) | Before debugging build/runtime failures or migrating subsystems to user space |
 | `docs/AI_prompts/README.md` | Format and policy for recording engineering-significant AI prompts | When logging milestone prompts or adding a new prompt category |
 | `Makefile` | Top-level dual-arch test suite targets and `verify-all` pipeline | Before invoking unfamiliar QEMU suites or adding new test targets |
