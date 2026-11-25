@@ -856,8 +856,10 @@ fat32_lfn_take(struct fat32_lfn *st, struct fat32_dirent *de,
       memmove(lfn_offs, st->slot_offs, st->slot_cnt * sizeof(uint));
       *lfn_cnt = st->slot_cnt;
     }
-  } else if(lfn_cnt){
-    *lfn_cnt = 0;
+  } else {
+    *len = 0;
+    if(lfn_cnt)
+      *lfn_cnt = 0;
   }
   fat32_lfn_reset(st);
   return ok;
@@ -905,7 +907,7 @@ fat32_locate_entry(struct inode *dp, char *name, struct fat32_entry_loc *out)
   char lname[DIRSIZ];
   uint clus, next, pos, off, hops = 0;
   uint lfn_offs[FAT32_MAX_LFN_SLOTS];
-  int lfn_cnt, llen, qlen, has_name83, has_lfn, has_alias = 0;
+  int lfn_cnt = 0, llen = 0, qlen, has_name83, has_lfn, has_alias = 0;
 
   if(dp->type != T_DIR)
     return -1;
@@ -983,7 +985,7 @@ fat32_readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
   char lname[DIRSIZ];
   uchar buf[BSIZE];
   uint want, seen, clus, next, pos, deoff, m, hops = 0;
-  int llen, has_lfn;
+  int llen = 0, has_lfn;
 
   if(ip->type == T_DIR){
     if(n < sizeof(xde) || off % sizeof(xde) != 0)

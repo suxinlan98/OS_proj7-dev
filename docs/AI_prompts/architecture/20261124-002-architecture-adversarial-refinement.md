@@ -7,7 +7,7 @@
 
 ## 任务说明
 
-围绕 xv6 双架构微内核重构方案开展基线代码反思、双方案交叉红队对抗审计、方案收敛，并针对服务拆分与 IPC 跳数开销、LoongArch64 底层 SMP/时钟/中断/PCI DMA 硬件隐患以及管道归属死锁风险完成架构定稿。产出为 [架构设计文档](../../architecture/README.md) 及 [基线诊断文档](../../baseline_debug.md)。
+围绕 xv6 双架构微内核重构方案开展基线代码反思、双方案交叉红队对抗审计、方案收敛，并针对服务拆分与 IPC 跳数开销、LoongArch64 底层 SMP/时钟/中断/PCI DMA 硬件隐患以及管道归属死锁风险完成架构定稿。产出为 [架构设计文档](../../architecture/README.md) 及 [基线诊断文档](../../baseline/README.md)。
 
 ## Prompt
 

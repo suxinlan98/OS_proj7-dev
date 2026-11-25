@@ -43,6 +43,7 @@ consputc(int c)
 
 struct {
   struct spinlock lock;
+  struct sleeplock write_lock;
   
   // input
 #define INPUT_BUF_SIZE 128
@@ -58,22 +59,28 @@ struct {
 int
 consolewrite(int user_src, uint64 src, int n)
 {
-  char buf[32];
+  char buf[64];
   int i = 0;
 
+  acquiresleep(&cons.write_lock);
   while(i < n){
     int nn = sizeof(buf);
     if(nn > n - i)
       nn = n - i;
-    if(either_copyin(buf, user_src, src+i, nn) == -1)
+    if(either_copyin(buf, user_src, src+i, nn) == -1){
+      releasesleep(&cons.write_lock);
       return i > 0 ? i : -1;
+    }
     int w = uartwrite(buf, nn);
-    if(w < 0)
+    if(w < 0){
+      releasesleep(&cons.write_lock);
       return i > 0 ? i : -1;
+    }
     i += w;
     if(w < nn)
       break;
   }
+  releasesleep(&cons.write_lock);
 
   return i;
 }
@@ -202,6 +209,7 @@ void
 consoleinit(void)
 {
   initlock(&cons.lock, "cons");
+  initsleeplock(&cons.write_lock, "conswrite");
 
   uartinit();
 

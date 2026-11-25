@@ -6,14 +6,31 @@
 
 static char digits[] = "0123456789ABCDEF";
 
+struct printbuf {
+  int fd;
+  int len;
+  char data[128];
+};
+
 static void
-putc(int fd, char c)
+flushbuf(struct printbuf *pb)
 {
-  write(fd, &c, 1);
+  if(pb->len > 0){
+    write(pb->fd, pb->data, pb->len);
+    pb->len = 0;
+  }
 }
 
 static void
-printint(int fd, long long xx, int base, int sgn)
+putc(struct printbuf *pb, char c)
+{
+  pb->data[pb->len++] = c;
+  if(pb->len == sizeof(pb->data))
+    flushbuf(pb);
+}
+
+static void
+printint(struct printbuf *pb, long long xx, int base, int sgn)
 {
   char buf[20];
   int i, neg;
@@ -35,25 +52,28 @@ printint(int fd, long long xx, int base, int sgn)
     buf[i++] = '-';
 
   while(--i >= 0)
-    putc(fd, buf[i]);
+    putc(pb, buf[i]);
 }
 
 static void
-printptr(int fd, uint64 x) {
+printptr(struct printbuf *pb, uint64 x) {
   int i;
-  putc(fd, '0');
-  putc(fd, 'x');
+  putc(pb, '0');
+  putc(pb, 'x');
   for (i = 0; i < (sizeof(uint64) * 2); i++, x <<= 4)
-    putc(fd, digits[x >> (sizeof(uint64) * 8 - 4)]);
+    putc(pb, digits[x >> (sizeof(uint64) * 8 - 4)]);
 }
 
 // Print to the given fd. Only understands %d, %x, %p, %c, %s.
 void
 vprintf(int fd, const char *fmt, va_list ap)
 {
+  struct printbuf pb;
   char *s;
   int c0, c1, c2, i, state;
 
+  pb.fd = fd;
+  pb.len = 0;
   state = 0;
   for(i = 0; fmt[i]; i++){
     c0 = fmt[i] & 0xff;
@@ -61,56 +81,57 @@ vprintf(int fd, const char *fmt, va_list ap)
       if(c0 == '%'){
         state = '%';
       } else {
-        putc(fd, c0);
+        putc(&pb, c0);
       }
     } else if(state == '%'){
       c1 = c2 = 0;
       if(c0) c1 = fmt[i+1] & 0xff;
       if(c1) c2 = fmt[i+2] & 0xff;
       if(c0 == 'd'){
-        printint(fd, va_arg(ap, int), 10, 1);
+        printint(&pb, va_arg(ap, int), 10, 1);
       } else if(c0 == 'l' && c1 == 'd'){
-        printint(fd, va_arg(ap, uint64), 10, 1);
+        printint(&pb, va_arg(ap, uint64), 10, 1);
         i += 1;
       } else if(c0 == 'l' && c1 == 'l' && c2 == 'd'){
-        printint(fd, va_arg(ap, uint64), 10, 1);
+        printint(&pb, va_arg(ap, uint64), 10, 1);
         i += 2;
       } else if(c0 == 'u'){
-        printint(fd, va_arg(ap, uint32), 10, 0);
+        printint(&pb, va_arg(ap, uint32), 10, 0);
       } else if(c0 == 'l' && c1 == 'u'){
-        printint(fd, va_arg(ap, uint64), 10, 0);
+        printint(&pb, va_arg(ap, uint64), 10, 0);
         i += 1;
       } else if(c0 == 'l' && c1 == 'l' && c2 == 'u'){
-        printint(fd, va_arg(ap, uint64), 10, 0);
+        printint(&pb, va_arg(ap, uint64), 10, 0);
         i += 2;
       } else if(c0 == 'x'){
-        printint(fd, va_arg(ap, uint32), 16, 0);
+        printint(&pb, va_arg(ap, uint32), 16, 0);
       } else if(c0 == 'l' && c1 == 'x'){
-        printint(fd, va_arg(ap, uint64), 16, 0);
+        printint(&pb, va_arg(ap, uint64), 16, 0);
         i += 1;
       } else if(c0 == 'l' && c1 == 'l' && c2 == 'x'){
-        printint(fd, va_arg(ap, uint64), 16, 0);
+        printint(&pb, va_arg(ap, uint64), 16, 0);
         i += 2;
       } else if(c0 == 'p'){
-        printptr(fd, va_arg(ap, uint64));
+        printptr(&pb, va_arg(ap, uint64));
       } else if(c0 == 'c'){
-        putc(fd, va_arg(ap, uint32));
+        putc(&pb, va_arg(ap, uint32));
       } else if(c0 == 's'){
         if((s = va_arg(ap, char*)) == 0)
           s = "(null)";
         for(; *s; s++)
-          putc(fd, *s);
+          putc(&pb, *s);
       } else if(c0 == '%'){
-        putc(fd, '%');
+        putc(&pb, '%');
       } else {
         // Unknown % sequence.  Print it to draw attention.
-        putc(fd, '%');
-        putc(fd, c0);
+        putc(&pb, '%');
+        putc(&pb, c0);
       }
 
       state = 0;
     }
   }
+  flushbuf(&pb);
 }
 
 void
@@ -120,6 +141,7 @@ fprintf(int fd, const char *fmt, ...)
 
   va_start(ap, fmt);
   vprintf(fd, fmt, ap);
+  va_end(ap);
 }
 
 void
@@ -129,4 +151,5 @@ printf(const char *fmt, ...)
 
   va_start(ap, fmt);
   vprintf(1, fmt, ap);
+  va_end(ap);
 }

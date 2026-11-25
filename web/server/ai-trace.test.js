@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +12,10 @@ import {
 } from './ai-trace.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const readSourceLine = (relative, lineNumber) => {
+  const lines = fs.readFileSync(path.join(REPO_ROOT, relative), 'utf8').split(/\r?\n/);
+  return lines[lineNumber - 1] ?? '';
+};
 const baseTrace = {
   command: 'cat',
   raw: 'cat /mnt/hello',
@@ -55,7 +60,9 @@ test('source evidence and symbol locations come from the current repository', ()
   const evidence = collectEvidence(REPO_ROOT, payload);
   assert.ok(evidence.some((item) => item.file === 'src/user/cat.c'));
   assert.ok(evidence.some((item) => item.file === 'src/kernel/vfs.c'));
-  assert.equal(findSymbolLine(REPO_ROOT, 'src/kernel/vfs.c', 'vfs_readi'), 478);
+  const vfsReadiLine = findSymbolLine(REPO_ROOT, 'src/kernel/vfs.c', 'vfs_readi');
+  assert.ok(vfsReadiLine > 0);
+  assert.match(readSourceLine('src/kernel/vfs.c', vfsReadiLine), /^\s*vfs_readi\s*\(/);
   assert.equal(findSymbolLine(REPO_ROOT, 'src/kernel/vfs.c', 'invented_function'), 0);
 });
 
@@ -67,7 +74,8 @@ test('model nodes are anchored to real symbols and fabricated files are rejected
     }],
   }, evidence);
   assert.equal(output.nodes.length, 4);
-  assert.equal(output.nodes[0].line, 25);
+  assert.equal(output.nodes[0].line, findSymbolLine(REPO_ROOT, 'src/user/cat.c', 'main'));
+  assert.match(readSourceLine('src/user/cat.c', output.nodes[0].line), /^\s*main\s*\(/);
   assert.equal(output.warnings.length, 1);
 });
 
@@ -90,7 +98,9 @@ test('AI trace request returns a validated trace without trusting model line num
   });
   assert.equal(result.trace.analysis, 'ai');
   assert.equal(result.trace.nodes.length, 4);
-  assert.equal(result.trace.nodes[3].line, 478);
+  const expectedVfsReadiLine = findSymbolLine(REPO_ROOT, 'src/kernel/vfs.c', 'vfs_readi');
+  assert.equal(result.trace.nodes[3].line, expectedVfsReadiLine);
+  assert.match(readSourceLine('src/kernel/vfs.c', result.trace.nodes[3].line), /^\s*vfs_readi\s*\(/);
   assert.ok(result.meta.evidenceCount >= 4);
 });
 
