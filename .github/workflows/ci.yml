@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check markdown links, tracked files, and IPC purity
         run: python3 .github/scripts/check_repo.py
@@ -38,9 +38,9 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -64,7 +64,7 @@ jobs:
       matrix:
         arch: [riscv, loongarch]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup toolchain
         uses: ./.github/actions/setup-xv6-toolchain
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload failure logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qemu-suites-logs-${{ matrix.arch }}
           path: tests/*/logs/
@@ -142,7 +142,7 @@ jobs:
       matrix:
         arch: [riscv, loongarch]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup toolchain
         uses: ./.github/actions/setup-xv6-toolchain
@@ -165,7 +165,7 @@ jobs:
 
       - name: Upload failure logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qemu-baseline-logs-${{ matrix.arch }}
           path: tests/test_baseline/logs/
