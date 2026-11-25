@@ -382,8 +382,11 @@ iput(struct inode *ip)
 
       release(&itable.lock);
 
+      // Invalidate the lockless fast path before releasing on-disk
+      // resources so a concurrent reuse of the same inum/cluster
+      // blocks on ip->lock rather than observing stale state.
+      __atomic_store_n(&ip->valid, 0, __ATOMIC_RELEASE);
       vfs_itrunc(ip);
-      ip->valid = 0;
 
       releasesleep(&ip->lock);
 

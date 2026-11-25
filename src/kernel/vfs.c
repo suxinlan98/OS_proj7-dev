@@ -27,7 +27,7 @@ static int
 xv6_link(struct inode *ip, struct inode *dp, char *name)
 {
   ilock(ip);
-  if(ip->type == T_DIR){
+  if(ip->type == T_DIR || ip->nlink < 1){
     iunlock(ip);
     return -1;
   }
@@ -37,7 +37,8 @@ xv6_link(struct inode *ip, struct inode *dp, char *name)
   iunlock(ip);
 
   ilock(dp);
-  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
+  if(dp->dev != ip->dev || dp->type != T_DIR || dp->nlink < 1 ||
+     dirlink(dp, name, ip->inum) < 0){
     iunlock(dp);
     ilock(ip);
     ip->nlink--;
@@ -265,6 +266,21 @@ vfs_mount(char *fstype, char *path, int dev)
   return 0;
 }
 
+// Caller must hold mtable.lock.
+static int
+vfs_has_child_mount(struct mount *mnt)
+{
+  for(int i = 1; i < NMOUNT; i++){
+    struct mount *child = &mtable.mount[i];
+    if(child == mnt || child->state == MOUNT_FREE)
+      continue;
+    if((child->mountpoint != 0 && child->mountpoint->mnt == mnt) ||
+       (child->parent != 0 && child->parent->mnt == mnt))
+      return 1;
+  }
+  return 0;
+}
+
 int
 vfs_umount(char *path)
 {
@@ -296,13 +312,15 @@ vfs_umount(char *path)
   acquire(&mtable.lock);
   for(i = 1; i < NMOUNT; i++){
     if(mtable.mount[i].state == MOUNTED &&
-       mtable.mount[i].mountpoint == mp){
+       mtable.mount[i].mountpoint != 0 &&
+       mtable.mount[i].mountpoint->dev == mp->dev &&
+       mtable.mount[i].mountpoint->inum == mp->inum){
       mnt = &mtable.mount[i];
       break;
     }
   }
   if(mnt == 0 || mnt->readers != 0 || mnt->root == 0 || mnt->fsops == 0 ||
-     mnt->fsops->unmount == 0){
+     mnt->fsops->unmount == 0 || vfs_has_child_mount(mnt)){
     release(&mtable.lock);
     iunlock(mp);
     goto bad;

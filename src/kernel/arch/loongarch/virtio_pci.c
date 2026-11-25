@@ -49,7 +49,7 @@ static uint32 notify_off_multiplier;
 
 static uint busno, devno, funcno;
 static uint64 bar_addr[6];
-static uint64 next_mmio = PCI_MMIO_BASE & ~DMWIN_MASK;
+static uint64 next_mmio = PCI_MMIO_BASE & ~DMWIN_UC_MASK;
 
 static uint64
 pci_conf_addr(uint bus, uint dev, uint func, uint off)
@@ -100,7 +100,7 @@ alloc_mmio(uint64 size)
 
   size = align_up(size, PGSIZE);
   addr = align_up(next_mmio, size);
-  if(addr + size > (PCI_MMIO_BASE & ~DMWIN_MASK) + PCI_MMIO_SIZE)
+  if(addr + size > (PCI_MMIO_BASE & ~DMWIN_UC_MASK) + PCI_MMIO_SIZE)
     panic("virtio pci mmio");
   next_mmio = addr + size;
   return addr;
@@ -139,14 +139,14 @@ alloc_bars(uint bus, uint dev, uint func)
       addr = alloc_mmio(size);
       pci_write32(bus, dev, func, off, (uint32)addr);
       pci_write32(bus, dev, func, off + 4, (uint32)(addr >> 32));
-      bar_addr[i] = addr | DMWIN_MASK;
+      bar_addr[i] = addr | DMWIN_UC_MASK;
       i++;
     } else {
       mask = low & ~0xf;
       size = (uint32)(-mask);
       addr = alloc_mmio(size);
       pci_write32(bus, dev, func, off, (uint32)addr);
-      bar_addr[i] = addr | DMWIN_MASK;
+      bar_addr[i] = addr | DMWIN_UC_MASK;
     }
   }
 }

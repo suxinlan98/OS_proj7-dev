@@ -111,6 +111,39 @@ static struct inode_ops ext2_inode_ops;
 static struct fs_ops ext2_fs_ops;
 static void ext2_itrunc(struct inode *ip);
 
+static int
+ext2_dirent_valid(const struct ext2_dirent *de, uint pos, uint block_size)
+{
+  if(de->rec_len < 8 || pos + de->rec_len > block_size)
+    return 0;
+  if(8 + (uint)de->name_len > de->rec_len)
+    return 0;
+  return 1;
+}
+
+static uint
+ext2_read_u32(struct ext2_fs *fs, uint bno, uint idx)
+{
+  struct buf *bp;
+  uint val;
+
+  bp = bread(fs->dev, bno);
+  val = ((uint*)bp->data)[idx];
+  brelse(bp);
+  return val;
+}
+
+static void
+ext2_write_u32(struct ext2_fs *fs, uint bno, uint idx, uint val)
+{
+  struct buf *bp;
+
+  bp = bread(fs->dev, bno);
+  ((uint*)bp->data)[idx] = val;
+  bwrite(bp);
+  brelse(bp);
+}
+
 static uint
 ext2_min(uint a, uint b)
 {
@@ -401,6 +434,7 @@ ext2_free_block(struct ext2_fs *fs, uint blockno)
   struct buf *bp;
   uchar *bitmap;
   uint bit;
+  int freed = 0;
 
   if(blockno == 0)
     return;
@@ -411,12 +445,15 @@ ext2_free_block(struct ext2_fs *fs, uint blockno)
   if(ext2_test_bit(bitmap, bit)){
     ext2_clear_bit(bitmap, bit);
     bwrite(bp);
+    freed = 1;
+  }
+  brelse(bp);
+  if(freed){
     fs->sb.s_free_blocks_count++;
     fs->gd.bg_free_blocks_count++;
     ext2_write_super(fs);
     ext2_write_group(fs);
   }
-  brelse(bp);
   releasesleep(&fs->lock);
 }
 
@@ -466,6 +503,7 @@ ext2_free_inode(struct ext2_fs *fs, uint inum)
   uchar *bitmap;
   struct ext2_dinode di;
   uint bit;
+  int freed = 0;
 
   if(inum == 0)
     return;
@@ -476,12 +514,15 @@ ext2_free_inode(struct ext2_fs *fs, uint inum)
   if(ext2_test_bit(bitmap, bit)){
     ext2_clear_bit(bitmap, bit);
     bwrite(bp);
+    freed = 1;
+  }
+  brelse(bp);
+  if(freed){
     fs->sb.s_free_inodes_count++;
     fs->gd.bg_free_inodes_count++;
     ext2_write_super(fs);
     ext2_write_group(fs);
   }
-  brelse(bp);
 
   memset(&di, 0, sizeof(di));
   ext2_write_dinode(fs, inum, &di);
@@ -494,13 +535,14 @@ static uint
 ext2_bmap_double(struct inode *ip, uint bn, int alloc)
 {
   struct ext2_fs *fs = (struct ext2_fs*)ip->mnt->fs_private;
-  struct buf *bp;
-  uint *indirect;
-  uint nind, inner, blockno;
+  uint nind, outer_idx, inner_idx, inner, blockno;
+  int new_outer = 0, new_inner = 0;
 
   nind = fs->block_size / sizeof(uint);
   if(bn >= nind * nind)
     return 0;
+  outer_idx = bn / nind;
+  inner_idx = bn % nind;
 
   if(ip->addrs[NDIRECT+1] == 0){
     if(!alloc)
@@ -508,39 +550,41 @@ ext2_bmap_double(struct inode *ip, uint bn, int alloc)
     ip->addrs[NDIRECT+1] = ext2_alloc_block(fs);
     if(ip->addrs[NDIRECT+1] == 0)
       return 0;
+    new_outer = 1;
   }
 
-  bp = bread(fs->dev, ip->addrs[NDIRECT+1]);
-  indirect = (uint*)bp->data;
-  inner = indirect[bn / nind];
+  inner = ext2_read_u32(fs, ip->addrs[NDIRECT+1], outer_idx);
   if(inner == 0){
-    if(!alloc){
-      brelse(bp);
+    if(!alloc)
       return 0;
-    }
     inner = ext2_alloc_block(fs);
     if(inner == 0){
-      brelse(bp);
+      if(new_outer){
+        ext2_free_block(fs, ip->addrs[NDIRECT+1]);
+        ip->addrs[NDIRECT+1] = 0;
+      }
       return 0;
     }
-    indirect[bn / nind] = inner;
-    bwrite(bp);
+    new_inner = 1;
+    ext2_write_u32(fs, ip->addrs[NDIRECT+1], outer_idx, inner);
   }
-  brelse(bp);
 
-  bp = bread(fs->dev, inner);
-  indirect = (uint*)bp->data;
-  blockno = indirect[bn % nind];
+  blockno = ext2_read_u32(fs, inner, inner_idx);
   if(blockno == 0 && alloc){
     blockno = ext2_alloc_block(fs);
     if(blockno == 0){
-      brelse(bp);
+      if(new_inner){
+        ext2_write_u32(fs, ip->addrs[NDIRECT+1], outer_idx, 0);
+        ext2_free_block(fs, inner);
+      }
+      if(new_outer){
+        ext2_free_block(fs, ip->addrs[NDIRECT+1]);
+        ip->addrs[NDIRECT+1] = 0;
+      }
       return 0;
     }
-    indirect[bn % nind] = blockno;
-    bwrite(bp);
+    ext2_write_u32(fs, inner, inner_idx, blockno);
   }
-  brelse(bp);
   return blockno;
 }
 
@@ -548,9 +592,8 @@ static uint
 ext2_bmap(struct inode *ip, uint bn, int alloc)
 {
   struct ext2_fs *fs = (struct ext2_fs*)ip->mnt->fs_private;
-  struct buf *bp;
-  uint *indirect;
   uint blockno;
+  int new_ind = 0;
 
   if(bn < NDIRECT){
     if(ip->addrs[bn] == 0 && alloc)
@@ -568,23 +611,22 @@ ext2_bmap(struct inode *ip, uint bn, int alloc)
     ip->addrs[NDIRECT] = ext2_alloc_block(fs);
     if(ip->addrs[NDIRECT] == 0)
       return 0;
+    new_ind = 1;
   }
 
-  bp = bread(fs->dev, ip->addrs[NDIRECT]);
-
-  indirect = (uint*)bp->data;
-  blockno = indirect[bn];
+  blockno = ext2_read_u32(fs, ip->addrs[NDIRECT], bn);
   if(blockno == 0 && alloc){
     blockno = ext2_alloc_block(fs);
     if(blockno == 0){
-      brelse(bp);
+      if(new_ind){
+        ext2_free_block(fs, ip->addrs[NDIRECT]);
+        ip->addrs[NDIRECT] = 0;
+      }
       return 0;
     }
-    indirect[bn] = blockno;
-    bwrite(bp);
+    ext2_write_u32(fs, ip->addrs[NDIRECT], bn, blockno);
   }
 
-  brelse(bp);
   return blockno;
 }
 
@@ -613,7 +655,7 @@ ext2_lookup(struct inode *dp, char *name)
       return 0;
     for(pos = 0; pos < fs->block_size; ){
       de = (struct ext2_dirent*)(buf + pos);
-      if(de->rec_len < 8 || pos + de->rec_len > fs->block_size)
+      if(!ext2_dirent_valid(de, pos, fs->block_size))
         break;
       if(de->inode != 0){
         if(de->name_len <= DIRSIZ){
@@ -655,12 +697,14 @@ ext2_find_dirent(struct inode *dp, char *name, struct ext2_dirent *out,
       return -1;
     for(pos = 0; pos < fs->block_size; ){
       de = (struct ext2_dirent*)(buf + pos);
-      if(de->rec_len < 8 || pos + de->rec_len > fs->block_size)
+      if(!ext2_dirent_valid(de, pos, fs->block_size))
         break;
       if(de->inode != 0 && de->name_len <= DIRSIZ &&
          ext2_nameeq(name, de->name, de->name_len)){
-        if(out)
-          *out = *de;
+        if(out){
+          memset(out, 0, sizeof(*out));
+          memmove(out, de, ext2_min(de->rec_len, sizeof(*out)));
+        }
         if(entry_off)
           *entry_off = ext2_block_offset(fs, bno) + pos;
         return 0;
@@ -700,7 +744,7 @@ ext2_is_dir_empty(struct inode *ip)
       return 0;
     for(pos = 0; pos < fs->block_size; ){
       de = (struct ext2_dirent*)(buf + pos);
-      if(de->rec_len < 8 || pos + de->rec_len > fs->block_size)
+      if(!ext2_dirent_valid(de, pos, fs->block_size))
         break;
       if(de->inode != 0 &&
          !ext2_nameeq(".", de->name, de->name_len) &&
@@ -830,6 +874,8 @@ ext2_create(struct inode *dp, char *name, short type, short major, short minor)
   (void)major;
   (void)minor;
 
+  if(dp->type != T_DIR || dp->nlink < 1)
+    return 0;
   if(type != T_FILE && type != T_DIR)
     return 0;
 
@@ -930,12 +976,11 @@ ext2_unlink(struct inode *dp, char *name)
 static int
 ext2_link(struct inode *ip, struct inode *dp, char *name)
 {
-  struct inode *old;
-
-  if(ip->type != T_FILE || dp->type != T_DIR)
-    return -1;
-
   ilock(ip);
+  if(ip->type != T_FILE || ip->nlink < 1){
+    iunlock(ip);
+    return -1;
+  }
   ip->nlink++;
   if(ext2_sync_inode(ip) < 0){
     ip->nlink--;
@@ -945,16 +990,9 @@ ext2_link(struct inode *ip, struct inode *dp, char *name)
   iunlock(ip);
 
   ilock(dp);
-  if((old = ext2_lookup(dp, name)) != 0){
-    iput(old);
-    iunlock(dp);
-    ilock(ip);
-    ip->nlink--;
-    ext2_sync_inode(ip);
-    iunlock(ip);
-    return -1;
-  }
-  if(ext2_dir_add(dp, name, ip->inum, EXT2_FT_REG_FILE) < 0){
+  if(dp->dev != ip->dev || dp->type != T_DIR || dp->nlink < 1 ||
+     ext2_find_dirent(dp, name, 0, 0) == 0 ||
+     ext2_dir_add(dp, name, ip->inum, EXT2_FT_REG_FILE) < 0){
     iunlock(dp);
     ilock(ip);
     ip->nlink--;
@@ -990,7 +1028,7 @@ ext2_readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
         return -1;
       for(pos = 0; pos < fs->block_size; ){
         de = (struct ext2_dirent*)(buf + pos);
-        if(de->rec_len < 8 || pos + de->rec_len > fs->block_size)
+        if(!ext2_dirent_valid(de, pos, fs->block_size))
           break;
         if(de->inode != 0){
           if(seen++ == want){
@@ -1074,11 +1112,55 @@ ext2_stati(struct inode *ip, struct stat *st)
 }
 
 static void
+ext2_free_indirect(struct ext2_fs *fs, uint ind_bno)
+{
+  struct buf *bp;
+  uint batch[32];
+  uint nind = fs->block_size / sizeof(uint);
+  uint i, j, cnt;
+
+  for(i = 0; i < nind; ){
+    bp = bread(fs->dev, ind_bno);
+    cnt = 0;
+    while(i < nind && cnt < NELEM(batch)){
+      uint b = ((uint*)bp->data)[i++];
+      if(b)
+        batch[cnt++] = b;
+    }
+    brelse(bp);
+    for(j = 0; j < cnt; j++)
+      ext2_free_block(fs, batch[j]);
+  }
+  ext2_free_block(fs, ind_bno);
+}
+
+static void
+ext2_free_double_indirect(struct ext2_fs *fs, uint outer_bno)
+{
+  struct buf *bp;
+  uint batch[32];
+  uint nind = fs->block_size / sizeof(uint);
+  uint i, j, cnt;
+
+  for(i = 0; i < nind; ){
+    bp = bread(fs->dev, outer_bno);
+    cnt = 0;
+    while(i < nind && cnt < NELEM(batch)){
+      uint b = ((uint*)bp->data)[i++];
+      if(b)
+        batch[cnt++] = b;
+    }
+    brelse(bp);
+    for(j = 0; j < cnt; j++)
+      ext2_free_indirect(fs, batch[j]);
+  }
+  ext2_free_block(fs, outer_bno);
+}
+
+static void
 ext2_itrunc(struct inode *ip)
 {
   struct ext2_fs *fs = (struct ext2_fs*)ip->mnt->fs_private;
-  struct buf *bp;
-  uint *indirect;
   int i;
 
   for(i = 0; i < NDIRECT; i++){
@@ -1089,36 +1171,12 @@ ext2_itrunc(struct inode *ip)
   }
 
   if(ip->addrs[NDIRECT]){
-    bp = bread(fs->dev, ip->addrs[NDIRECT]);
-    indirect = (uint*)bp->data;
-    for(i = 0; i < fs->block_size / sizeof(uint); i++)
-      if(indirect[i])
-        ext2_free_block(fs, indirect[i]);
-    brelse(bp);
-    ext2_free_block(fs, ip->addrs[NDIRECT]);
+    ext2_free_indirect(fs, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
 
   if(ip->addrs[NDIRECT+1]){
-    bp = bread(fs->dev, ip->addrs[NDIRECT+1]);
-    indirect = (uint*)bp->data;
-    for(i = 0; i < fs->block_size / sizeof(uint); i++){
-      if(indirect[i]){
-        struct buf *ibp;
-        uint *inner;
-        int j;
-
-        ibp = bread(fs->dev, indirect[i]);
-        inner = (uint*)ibp->data;
-        for(j = 0; j < fs->block_size / sizeof(uint); j++)
-          if(inner[j])
-            ext2_free_block(fs, inner[j]);
-        brelse(ibp);
-        ext2_free_block(fs, indirect[i]);
-      }
-    }
-    brelse(bp);
-    ext2_free_block(fs, ip->addrs[NDIRECT+1]);
+    ext2_free_double_indirect(fs, ip->addrs[NDIRECT+1]);
     ip->addrs[NDIRECT+1] = 0;
   }
 

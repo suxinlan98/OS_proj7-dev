@@ -547,17 +547,17 @@ fat32_find_free_entry(struct inode *dp, uint *entry_off)
   return 0;
 }
 
-static void
+static int
 fat32_remove_entry(struct fat32_fs *fs, uint entry_off)
 {
   struct fat32_dirent de;
 
   if(entry_off == 0)
-    return;
+    return -1;
   if(fat32_read_entry(fs, entry_off, &de) < 0)
-    return;
+    return -1;
   de.name[0] = 0xe5;
-  fat32_write_entry(fs, entry_off, &de);
+  return fat32_write_entry(fs, entry_off, &de);
 }
 
 static int
@@ -584,7 +584,7 @@ fat32_sync_inode(struct inode *ip)
   struct fat32_fs *fs = (struct fat32_fs*)ip->mnt->fs_private;
   struct fat32_dirent de;
 
-  if(ip->addrs[1] == 0)
+  if(ip->addrs[1] == 0 || ip->nlink == 0)
     return 0;
   if(fat32_read_entry(fs, ip->addrs[1], &de) < 0)
     return -1;
@@ -953,7 +953,8 @@ fat32_writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 
   if(off > ip->size)
     ip->size = off;
-  fat32_sync_inode(ip);
+  if(fat32_sync_inode(ip) < 0)
+    return -1;
   return tot;
 }
 
@@ -1034,6 +1035,8 @@ fat32_create(struct inode *dp, char *name, short type, short major, short minor)
   (void)major;
   (void)minor;
 
+  if(dp->type != T_DIR || dp->nlink < 1)
+    return 0;
   if(type != T_FILE && type != T_DIR)
     return 0;
   if(fat32_name83(name, name83) < 0)
@@ -1142,10 +1145,15 @@ fat32_unlink(struct inode *dp, char *name)
     return -1;
   }
 
-  fat32_remove_entry(fs, entry_off);
+  if(fat32_remove_entry(fs, entry_off) < 0){
+    iunlockput(ip);
+    return -1;
+  }
 
-  // Only drop the link count here. The cluster chain is released by
-  // iput() once the last open reference goes away.
+  // Clear the directory-slot offset so subsequent writes to an open
+  // unlinked FD cannot corrupt a reused slot; cluster chain release
+  // happens in iput() once the last open reference goes away.
+  ip->addrs[1] = 0;
   ip->nlink = 0;
   iunlockput(ip);
   return 0;

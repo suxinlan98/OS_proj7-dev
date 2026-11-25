@@ -270,6 +270,10 @@ create(char *path, short type, short major, short minor)
     return 0;
 
   ilock(dp);
+  if(dp->type != T_DIR || dp->nlink < 1){
+    iunlockput(dp);
+    return 0;
+  }
 
   if((ip = vfs_lookup(dp, name)) != 0){
     iunlockput(dp);
