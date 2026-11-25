@@ -1,4 +1,6 @@
-#define NPROC        64  // maximum number of processes
+#define NPROC_SVC     8  // reserved process slots for microkernel services
+#define NPROC_USER   64  // maximum number of ordinary user processes
+#define NPROC        (NPROC_SVC + NPROC_USER)  // total process table slots
 #define NCPU          8  // maximum number of CPUs
 #define NOFILE       16  // open files per process
 #define NFILE       100  // open files per system

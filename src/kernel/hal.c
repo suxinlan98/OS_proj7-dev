@@ -43,6 +43,12 @@ hal_send_ipi(int cpu)
 }
 
 void
+hal_boot_secondary(void)
+{
+  // QEMU RISC-V virt boots all harts directly into _entry.
+}
+
+void
 hal_disk_init(void)
 {
   virtio_disk_init();

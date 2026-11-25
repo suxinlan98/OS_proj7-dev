@@ -150,7 +150,7 @@ _Static_assert(sizeof(struct ipc_msg) == 64, "ipc_msg must be 64 bytes");
 ### 4. 无锁死 `kfork` 握手与监管资源预留
 - **`kfork()` 锁序**：`allocproc()` 分配 `np`（`state = USED`）并完成 `uvmcopy` → **先 `release(&np->lock)`** → 对非 `PFLAG_SERVICE` 进程发起**单次批量原子 `VFS_OP_FORK_BATCH`**（携带父进程所有活跃 `FD_VFS` 句柄与 `cwd`）→ 失败则干净回收 `np`，成功再挂接 `parent` 并置 `RUNNABLE`。全程无持自旋锁睡眠，且杜绝部分句柄复制失败导致的泄漏。
 - **双资源保底**：
-  - 进程表 `NPROC = 72`（普通用户上限仍保持 64，保留 8 槽专供常驻服务与 `CAP_SUPERVISOR` 重生）；
+  - 进程表分区隔离：`NPROC = 72`（`NPROC_SVC = 8` 独占 `proc[0..7]` 供常驻服务与 `CAP_SUPERVISOR` 重生，覆盖 6 个常驻服务 + 2 个崩溃回收并发余量；`NPROC_USER = 64` 独占 `proc[8..71]` 供普通用户进程），通过物理槽位区间硬切分保证无额外全局计数锁，且用户态 `fork` 炸弹绝对无法占满服务重启槽位；
   - 物理页保底 `MIN_SVC_PAGES = 48`（192 KiB）：空闲页 `<= MIN_SVC_PAGES` 时仅允许 `CAP_SUPERVISOR` 与内核关键路径分配，确保 `mem` / `sbrkfail` / `forkforkfork` 极限压测下 `rs` 仍能完整完成服务重启。
 
 ---
@@ -198,8 +198,8 @@ _Static_assert(sizeof(struct ipc_msg) == 64, "ipc_msg must be 64 bytes");
 
 | 硬件问题 | 基线根因 | 架构级根治方案 |
 | :--- | :--- | :--- |
-| **1. 副核启动即死锁** | `entry.S` 将 `TLBRENTRY` 置 `0`；`kvminithart()` 漏写 `PGDL`/`PWCL`/`PWCH`；`trapinithart()` 为空漏写 `EENTRY`/`TLBRENTRY`/`MERRENTRY`/`ECFG`/`TCFG`，副核调度即跳 `0x0` 并死持 `p->lock` | 保存全局 `kernel_pagetable`，补齐副核 `kvminithart()`（写 `PGDL`/`PWCL`/`PWCH` + `tlbinit()`）与 `trapinithart()`（写 `ECFG`/`TCFG`/`EENTRY`/`TLBRENTRY`/`MERRENTRY` + 启用 IPI 向量）；同时将 LoongArch64 `trap.c` 中的 `p->killed` 访问统一改为加锁 `killed(p)`/`setkilled(p)` |
-| **2. 167.8ms 时钟卡顿与副核 `idle 0` 睡死** | `tcfg = 0x1000000UL` 在 100MHz 计数器下周期达 167.8ms，且无核间 IPI 唤醒 `idle 0` 副核，导致跨核 IPC 延迟极高 | 缩短龙芯 `TCFG` 周期至 ~10ms（同时按比例校准逻辑 `ticks` 兼容 `pause` 时长）；为双架构引入核间 **IPI 唤醒**（龙芯 IOCSR IPI / RISC-V 软中断），在 `wakeup()` 与 IPC 唤醒时立即唤醒处于 `idle 0`/`wfi` 的副核，叠加本核 `next_hint` 直切 |
+| **1. 副核启动未引导与初始化死锁** | QEMU LoongArch `virt` 直启内核时仅启动 CPU 0，副核停泊在 `slave_boot_code` 等待邮箱与 IPI 引导；且原始基线 `entry.S` 将 `TLBRENTRY` 置 `0`、`kvminithart()`/`trapinithart()` 漏写 CSR，副核调度即跳 `0x0` 并死持 `p->lock` | CPU 0 启动期通过 `hal_boot_secondary()` 向 `IOCSR_MAIL_SEND (0x1048)` + `IOCSR_IPI_SEND (0x1040)` 写入物理入口地址真正拉起副核（`-smp 1` 下对不存在核号无副作用）；`entry.S` 先配 `DMWIN0`/`DMWIN1` 再切 `PG=1` 并掩码 `CPUID & 0x1ff`；补齐副核 `kvminithart()` 与 `trapinithart()`（含清残留启动 IPI 与加锁 `killed(p)`/`setkilled(p)`） |
+| **2. 167.8ms 时钟卡顿与副核 `idle 0` 唤醒验证** | `tcfg = 0x1000000UL` 在 100MHz 计数器下周期达 167.8ms，且原始基线无核间 IPI 唤醒 `idle 0` 副核 | 经独立最小裸机探针在 `qemu-system-loongarch64 -M virt -smp 3` 实测验证：① `CPUCFG4 = 100 MHz`；② `IOCSR_IPI_SEND (0x1040)` **确可**在 `CRMD.IE=0` 且关闭 `TI_VEC` 时以 ~0.1–0.17 ms 唤醒 `idle 0` 副核并正常触发 `IPI_VEC`；③ 同步保留每核 10 ms 周期定时器（`LA_TIMER_PERIOD_10MS = 1000000UL`）作为 IPI 不可用时的有界备用唤醒源，仅由 CPU 0 按 `LA_TIMER_SUBTICKS = 10` 分频推进逻辑 `ticks`（实测 10 次中断 = 100 ms，严格对齐 RISC-V 10 Hz 系统时钟），叠加本核 `next_hint` 直切 |
 | **3. 串口与磁盘双双吞中断** | 龙芯 UART 为边沿触发（`LS7A_INT_EDGE_REG`），VirtIO PCI 为电平 INTx，两者在 ack 窗口均可能丢中断导致驱动永久沉睡 | `consdrvd` 与 `blkdrvd` **双驱动**统一实施“排空队列 → `IRQ_ACK` → 复检硬件状态位（UART `LSR_RX_READY`/`LSR_TX_IDLE` 与 VirtIO `used_idx != used->idx`）”；同时内核时钟中断在存在在途块请求或串口未完成 TX 时周期投递轻量 `NOTIFY_WATCHDOG` 双兜底 |
 | **4. MMIO 缓存属性、非页对齐与 TLB 抖动** | `UART0 (0x1fe001e0)` 偏移 `0x1e0`；MMIO 须 `MAT=0` 强序非缓存；`uservec`/`userret` 每次全量 `invtlb` 放大多跳 IPC 成本 | `dev_map` 按 `PGROUNDDOWN(pa)` 映射并清除 `PTE_MAT` 返回页内偏移；通过“6 服务内聚根卷 + 分域 LRU 缓存 + 4 KiB 读写分片 + `FS_OP_LOOKUP_PATH` + `ipc_forward`”将常规操作压至 1 跳 IPC；必要时按 `pid` 启用轻量 ASID 避免全量 `invtlb` |
 

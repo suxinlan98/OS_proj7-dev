@@ -120,16 +120,21 @@ allocpid()
   return pid;
 }
 
-// Look in the process table for an UNUSED proc.
+// Look in the process table for an UNUSED proc within the pool for `flags`:
+// - PFLAG_SERVICE uses reserved slots [0, NPROC_SVC) so ordinary user
+//   programs can never starve microkernel service respawns.
+// - Ordinary user processes use slots [NPROC_SVC, NPROC) (capped at NPROC_USER).
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
 // If there are no free procs, or a memory allocation fails, return 0.
 static struct proc*
-allocproc(void)
+allocproc(int flags)
 {
   struct proc *p;
+  struct proc *begin = (flags & PFLAG_SERVICE) ? &proc[0] : &proc[NPROC_SVC];
+  struct proc *end = (flags & PFLAG_SERVICE) ? &proc[NPROC_SVC] : &proc[NPROC];
 
-  for(p = proc; p < &proc[NPROC]; p++) {
+  for(p = begin; p < end; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
       goto found;
@@ -142,6 +147,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  p->flags = flags;
   p->killed = 0;
   p->xstate = 0;
   p->chan = 0;
@@ -184,6 +190,7 @@ detachproc(struct proc *p, struct trapframe **tf_out,
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
+  p->flags = 0;
   p->parent = 0;
   p->name[0] = 0;
   p->chan = 0;
@@ -276,7 +283,7 @@ userinit(void)
 {
   struct proc *p;
 
-  p = allocproc();
+  p = allocproc(0);
   initproc = p;
   
   p->cwd = namei("/");
@@ -320,8 +327,8 @@ kfork(void)
   struct proc *np;
   struct proc *p = myproc();
 
-  // Allocate process.
-  if((np = allocproc()) == 0){
+  // Allocate process from the ordinary user pool (never service slots).
+  if((np = allocproc(0)) == 0){
     return -1;
   }
 

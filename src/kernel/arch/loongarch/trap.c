@@ -56,6 +56,9 @@ trapinithart(void)
 {
   uint32 ecfg = (0U << CSR_ECFG_VS_SHIFT) | HWI_VEC | TI_VEC | IPI_VEC;
   uint64 tcfg = LA_TIMER_PERIOD_10MS | CSR_TCFG_EN | CSR_TCFG_PER;
+  uint32 stale_ipi = iocsr_readl(LOONGARCH_IOCSR_IPI_STATUS);
+  if(stale_ipi)
+    iocsr_writel(stale_ipi, LOONGARCH_IOCSR_IPI_CLEAR);
   iocsr_writel(0xffffffffU, LOONGARCH_IOCSR_IPI_EN);
   w_csr_ecfg(ecfg);
   w_csr_tcfg(tcfg);

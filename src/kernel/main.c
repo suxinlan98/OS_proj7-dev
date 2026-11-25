@@ -32,6 +32,7 @@ main()
     userinit();      // first user process
     __sync_synchronize();
     started = 1;
+    hal_boot_secondary();
   } else {
     while(started == 0)
       ;

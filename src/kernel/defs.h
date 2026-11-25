@@ -30,6 +30,7 @@ void            hal_intr_inithart(void);
 uint64          hal_irq_claim(void);
 void            hal_irq_complete(uint64);
 void            hal_send_ipi(int);
+void            hal_boot_secondary(void);
 
 // LoongArch platform helpers.
 void            apicinit(void);
