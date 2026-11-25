@@ -42,6 +42,21 @@ acquire(struct spinlock *lk)
   lk->cpu = mycpu();
 }
 
+// Non-blocking lock attempt. Returns 1 if acquired (with interrupts
+// disabled via push_off), or 0 if already held.
+int
+try_acquire(struct spinlock *lk)
+{
+  push_off();
+  if(holding(lk) || __sync_lock_test_and_set(&lk->locked, 1) != 0){
+    pop_off();
+    return 0;
+  }
+  __sync_synchronize();
+  lk->cpu = mycpu();
+  return 1;
+}
+
 // Release the lock.
 void
 release(struct spinlock *lk)

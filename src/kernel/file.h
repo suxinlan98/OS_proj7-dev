@@ -32,6 +32,7 @@ struct inode {
   short minor;
   short nlink;
   uint size;
+  uint nblocks;       // allocated fs-block count (used by ext2 for O(1) i_blocks)
   uint addrs[NDIRECT+2];   // +1: xv6 single indirect; +2: ext2 double indirect
 };
 

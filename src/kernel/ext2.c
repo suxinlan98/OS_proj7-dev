@@ -236,6 +236,7 @@ ext2_type_to_mode(short type)
 static void
 ext2_fill_inode(struct inode *ip, struct mount *mnt, struct ext2_dinode *di)
 {
+  struct ext2_fs *fs = (struct ext2_fs*)mnt->fs_private;
   int i;
 
   ip->fstype = FS_EXT2;
@@ -246,6 +247,7 @@ ext2_fill_inode(struct inode *ip, struct mount *mnt, struct ext2_dinode *di)
   ip->minor = 0;
   ip->nlink = di->i_links_count;
   ip->size = di->i_size;
+  ip->nblocks = di->i_blocks / (fs->block_size / 512);
   for(i = 0; i < NDIRECT; i++)
     ip->addrs[i] = di->i_block[i];
   ip->addrs[NDIRECT] = di->i_block[12];
@@ -299,56 +301,23 @@ ext2_sync_inode(struct inode *ip)
 {
   struct ext2_fs *fs = (struct ext2_fs*)ip->mnt->fs_private;
   struct ext2_dinode di;
-  struct buf *bp;
-  uint *indirect;
-  uint blocks;
+  ushort perm;
   int i;
 
   if(ext2_read_dinode(fs, ip->inum, &di) < 0)
     return -1;
 
-  di.i_mode = ext2_type_to_mode(ip->type);
+  perm = di.i_mode & 0x0FFF;
+  if(perm == 0)
+    perm = (ip->type == T_DIR) ? 0755 : 0644;
+  di.i_mode = ((ip->type == T_DIR) ? EXT2_S_IFDIR : EXT2_S_IFREG) | perm;
   di.i_size = ip->size;
   di.i_links_count = ip->nlink;
-  blocks = 0;
-  for(i = 0; i < NDIRECT; i++){
+  for(i = 0; i < NDIRECT; i++)
     di.i_block[i] = ip->addrs[i];
-    if(ip->addrs[i])
-      blocks++;
-  }
   di.i_block[12] = ip->addrs[NDIRECT];
-  if(ip->addrs[NDIRECT]){
-    blocks++;
-    bp = bread(fs->dev, ip->addrs[NDIRECT]);
-    indirect = (uint*)bp->data;
-    for(i = 0; i < fs->block_size / sizeof(uint); i++)
-      if(indirect[i])
-        blocks++;
-    brelse(bp);
-  }
   di.i_block[13] = ip->addrs[NDIRECT+1];
-  if(ip->addrs[NDIRECT+1]){
-    blocks++;
-    bp = bread(fs->dev, ip->addrs[NDIRECT+1]);
-    indirect = (uint*)bp->data;
-    for(i = 0; i < fs->block_size / sizeof(uint); i++){
-      if(indirect[i]){
-        struct buf *ibp;
-        uint *inner;
-        int j;
-
-        blocks++;
-        ibp = bread(fs->dev, indirect[i]);
-        inner = (uint*)ibp->data;
-        for(j = 0; j < fs->block_size / sizeof(uint); j++)
-          if(inner[j])
-            blocks++;
-        brelse(ibp);
-      }
-    }
-    brelse(bp);
-  }
-  di.i_blocks = blocks * (fs->block_size / 512);
+  di.i_blocks = ip->nblocks * (fs->block_size / 512);
 
   if(ext2_write_dinode(fs, ip->inum, &di) < 0)
     return -1;
@@ -561,6 +530,7 @@ ext2_bmap_double(struct inode *ip, uint bn, int alloc)
     ip->addrs[NDIRECT+1] = ext2_alloc_block(fs);
     if(ip->addrs[NDIRECT+1] == 0)
       return 0;
+    ip->nblocks++;
     new_outer = 1;
   }
 
@@ -573,9 +543,11 @@ ext2_bmap_double(struct inode *ip, uint bn, int alloc)
       if(new_outer){
         ext2_free_block(fs, ip->addrs[NDIRECT+1]);
         ip->addrs[NDIRECT+1] = 0;
+        ip->nblocks--;
       }
       return 0;
     }
+    ip->nblocks++;
     new_inner = 1;
     ext2_write_u32(fs, ip->addrs[NDIRECT+1], outer_idx, inner);
   }
@@ -587,13 +559,16 @@ ext2_bmap_double(struct inode *ip, uint bn, int alloc)
       if(new_inner){
         ext2_write_u32(fs, ip->addrs[NDIRECT+1], outer_idx, 0);
         ext2_free_block(fs, inner);
+        ip->nblocks--;
       }
       if(new_outer){
         ext2_free_block(fs, ip->addrs[NDIRECT+1]);
         ip->addrs[NDIRECT+1] = 0;
+        ip->nblocks--;
       }
       return 0;
     }
+    ip->nblocks++;
     ext2_write_u32(fs, inner, inner_idx, blockno);
   }
   return blockno;
@@ -607,8 +582,11 @@ ext2_bmap(struct inode *ip, uint bn, int alloc)
   int new_ind = 0;
 
   if(bn < NDIRECT){
-    if(ip->addrs[bn] == 0 && alloc)
+    if(ip->addrs[bn] == 0 && alloc){
       ip->addrs[bn] = ext2_alloc_block(fs);
+      if(ip->addrs[bn])
+        ip->nblocks++;
+    }
     return ip->addrs[bn];
   }
 
@@ -622,6 +600,7 @@ ext2_bmap(struct inode *ip, uint bn, int alloc)
     ip->addrs[NDIRECT] = ext2_alloc_block(fs);
     if(ip->addrs[NDIRECT] == 0)
       return 0;
+    ip->nblocks++;
     new_ind = 1;
   }
 
@@ -632,9 +611,11 @@ ext2_bmap(struct inode *ip, uint bn, int alloc)
       if(new_ind){
         ext2_free_block(fs, ip->addrs[NDIRECT]);
         ip->addrs[NDIRECT] = 0;
+        ip->nblocks--;
       }
       return 0;
     }
+    ip->nblocks++;
     ext2_write_u32(fs, ip->addrs[NDIRECT], bn, blockno);
   }
 
@@ -1215,6 +1196,7 @@ ext2_itrunc(struct inode *ip)
     ip->addrs[NDIRECT+1] = 0;
   }
 
+  ip->nblocks = 0;
   ip->size = 0;
   ext2_sync_inode(ip);
 

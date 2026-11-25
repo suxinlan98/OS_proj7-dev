@@ -460,6 +460,34 @@ virtio_disk_rw(struct buf *b, int write)
   release(&disk.vdisk_lock);
 }
 
+// Caller must hold disk.vdisk_lock.
+static void
+virtio_disk_drain_locked(void)
+{
+  if(disk.used == 0)
+    return;
+
+  __sync_synchronize();
+
+  // the device increments disk.used->idx when it
+  // adds an entry to the used ring.
+  while(disk.used_idx != disk.used->idx){
+    __sync_synchronize();
+    uint id = disk.used->ring[disk.used_idx % NUM].id;
+
+    if(id >= NUM || disk.info[id].b == 0)
+      panic("virtio_disk_intr bad id");
+    if(disk.info[id].status != 0)
+      panic("virtio_disk_intr status");
+
+    struct buf *b = disk.info[id].b;
+    b->disk = 0;   // disk is done with buf
+    wakeup(b);
+
+    disk.used_idx += 1;
+  }
+}
+
 void
 virtio_disk_intr()
 {
@@ -472,25 +500,7 @@ virtio_disk_intr()
   // completion entries in this interrupt, and have nothing to do
   // in the next interrupt, which is harmless.
   virtio_intr_ack();
-
-  __sync_synchronize();
-
-  // the device increments disk.used->idx when it
-  // adds an entry to the used ring.
-
-  while(disk.used_idx != disk.used->idx){
-    __sync_synchronize();
-    int id = disk.used->ring[disk.used_idx % NUM].id;
-
-    if(disk.info[id].status != 0)
-      panic("virtio_disk_intr status");
-
-    struct buf *b = disk.info[id].b;
-    b->disk = 0;   // disk is done with buf
-    wakeup(b);
-
-    disk.used_idx += 1;
-  }
+  virtio_disk_drain_locked();
 
   release(&disk.vdisk_lock);
 }
@@ -519,9 +529,14 @@ virtio_disk_pending(void)
 void
 virtio_disk_watchdog(void)
 {
-  if(disk.vdisk_lock.locked)
+  if(disk.used == 0)
     return;
-  if(!virtio_disk_pending())
+  if(!try_acquire(&disk.vdisk_lock))
     return;
-  virtio_disk_intr();
+  __sync_synchronize();
+  if(disk.used_idx != disk.used->idx){
+    virtio_intr_ack();
+    virtio_disk_drain_locked();
+  }
+  release(&disk.vdisk_lock);
 }

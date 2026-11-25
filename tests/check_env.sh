@@ -28,6 +28,7 @@ echo "== host build/test tools =="
 check "make"        make
 check "host gcc"    gcc
 check "python3"     python3
+check "perl"        perl
 check "mkfs.ext2"   mkfs.ext2
 check "debugfs"     debugfs
 

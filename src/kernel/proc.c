@@ -91,14 +91,30 @@ myproc(void)
   return p;
 }
 
+static int
+pid_in_use(int pid)
+{
+  struct proc *q;
+
+  for(q = proc; q < &proc[NPROC]; q++){
+    if(__atomic_load_n(&q->pid, __ATOMIC_RELAXED) == pid)
+      return 1;
+  }
+  return 0;
+}
+
 int
 allocpid()
 {
   int pid;
-  
+
   acquire(&pid_lock);
-  pid = nextpid;
-  nextpid = nextpid + 1;
+  for(;;){
+    pid = nextpid;
+    nextpid = (nextpid >= 0x7fffffff) ? 1 : (nextpid + 1);
+    if(!pid_in_use(pid))
+      break;
+  }
   release(&pid_lock);
 
   return pid;

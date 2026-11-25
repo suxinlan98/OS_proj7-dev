@@ -73,7 +73,7 @@ OBJS = $(ARCH_OBJS) $(COMMON_OBJS)
 ARCH_STAMP = .arch-$(ARCH)
 
 $(ARCH_STAMP):
-	rm -f */*.o */*/*.o */*.d */*/*.d
+	rm -f */*.o */*/*.o */*/*/*.o */*.d */*/*.d */*/*/*.d
 	rm -f .arch-*
 	touch $@
 
@@ -312,9 +312,9 @@ qemu-gdb: $K/kernel .gdbinit fs.img
 print-gdbport:
 	@echo $(GDBPORT)
 
-QEMU_VERSION := $(shell $(QEMU) --version | head -n 1 | sed -E 's/^QEMU emulator version ([0-9]+\.[0-9]+)\..*/\1/')
+QEMU_VERSION := $(shell $(QEMU) --version | head -n 1 | sed -E 's/^QEMU emulator version ([0-9]+\.[0-9]+).*/\1/')
 check-qemu-version:
-	@if [ "$(shell echo "$(QEMU_VERSION) >= $(MIN_QEMU_VERSION)" | bc)" -eq 0 ]; then \
-		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION)"; \
+	@python3 -c 'import sys; cur=tuple(int(x) for x in sys.argv[1].split(".")); req=tuple(int(x) for x in sys.argv[2].split(".")); sys.exit(0 if cur >= req else 1)' "$(QEMU_VERSION)" "$(MIN_QEMU_VERSION)" || { \
+		echo "ERROR: Need qemu version >= $(MIN_QEMU_VERSION) (got $(QEMU_VERSION))"; \
 		exit 1; \
-	fi
+	}

@@ -135,7 +135,7 @@ static uint64 (*syscalls[])(void) = {
 void
 syscall(void)
 {
-  int num;
+  uint64 num;
   struct proc *p = myproc();
 
   num = p->trapframe->a7;
@@ -144,7 +144,7 @@ syscall(void)
     // and store its return value in p->trapframe->a0
     p->trapframe->a0 = syscalls[num]();
   } else {
-    printf("%d %s: unknown sys call %d\n",
+    printf("%d %s: unknown sys call %ld\n",
             p->pid, p->name, num);
     p->trapframe->a0 = -1;
   }

@@ -189,8 +189,9 @@ main(int argc, char **argv)
   memset(fsinfo, 0, sizeof(fsinfo));
   put32(fsinfo, 0, 0x41615252);
   put32(fsinfo, 484, 0x61417272);
-  put32(fsinfo, 488, clusters - 1);
-  put32(fsinfo, 492, 3);
+  // Clusters 2 (root dir), 3 and 4 (LFN fixtures) are pre-allocated.
+  put32(fsinfo, 488, clusters - 3);
+  put32(fsinfo, 492, 5);
   put32(fsinfo, 508, 0xaa550000);
   write_sector(f, 1, fsinfo);
   write_sector(f, 7, fsinfo);

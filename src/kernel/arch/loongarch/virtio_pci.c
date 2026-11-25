@@ -37,9 +37,12 @@ struct virtio_pci_common_cfg {
   uint16 queue_msix_vector;
   uint16 queue_enable;
   uint16 queue_notify_off;
-  uint64 queue_desc;
-  uint64 queue_driver;
-  uint64 queue_device;
+  uint32 queue_desc_lo;
+  uint32 queue_desc_hi;
+  uint32 queue_driver_lo;
+  uint32 queue_driver_hi;
+  uint32 queue_device_lo;
+  uint32 queue_device_hi;
 };
 
 static volatile struct virtio_pci_common_cfg *common_cfg;
@@ -216,16 +219,27 @@ virtio_pci_init(void)
               PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 }
 
+static void
+write_reg64_split(volatile uint32 *lo, volatile uint32 *hi, uint64 val)
+{
+  *lo = (uint32)val;
+  *hi = (uint32)(val >> 32);
+  __sync_synchronize();
+}
+
 uint8
 virtio_pci_get_status(void)
 {
+  __sync_synchronize();
   return common_cfg->device_status;
 }
 
 void
 virtio_pci_set_status(uint8 status)
 {
+  __sync_synchronize();
   common_cfg->device_status = status;
+  __sync_synchronize();
 }
 
 uint64
@@ -234,8 +248,10 @@ virtio_pci_get_features(void)
   uint64 features;
 
   common_cfg->device_feature_select = 0;
+  __sync_synchronize();
   features = common_cfg->device_feature;
   common_cfg->device_feature_select = 1;
+  __sync_synchronize();
   features |= ((uint64)common_cfg->device_feature) << 32;
   return features;
 }
@@ -244,15 +260,19 @@ void
 virtio_pci_set_features(uint64 features)
 {
   common_cfg->driver_feature_select = 0;
-  common_cfg->driver_feature = features;
+  __sync_synchronize();
+  common_cfg->driver_feature = (uint32)features;
   common_cfg->driver_feature_select = 1;
-  common_cfg->driver_feature = features >> 32;
+  __sync_synchronize();
+  common_cfg->driver_feature = (uint32)(features >> 32);
+  __sync_synchronize();
 }
 
 void
 virtio_pci_select_queue(uint16 queue)
 {
   common_cfg->queue_select = queue;
+  __sync_synchronize();
 }
 
 uint16
@@ -271,24 +291,25 @@ void
 virtio_pci_set_queue_num(uint16 num)
 {
   common_cfg->queue_size = num;
+  __sync_synchronize();
 }
 
 void
 virtio_pci_set_queue_desc(uint64 addr)
 {
-  common_cfg->queue_desc = addr;
+  write_reg64_split(&common_cfg->queue_desc_lo, &common_cfg->queue_desc_hi, addr);
 }
 
 void
 virtio_pci_set_queue_avail(uint64 addr)
 {
-  common_cfg->queue_driver = addr;
+  write_reg64_split(&common_cfg->queue_driver_lo, &common_cfg->queue_driver_hi, addr);
 }
 
 void
 virtio_pci_set_queue_used(uint64 addr)
 {
-  common_cfg->queue_device = addr;
+  write_reg64_split(&common_cfg->queue_device_lo, &common_cfg->queue_device_hi, addr);
 }
 
 void
@@ -296,6 +317,7 @@ virtio_pci_set_queue_ready(uint16 ready)
 {
   common_cfg->queue_msix_vector = 0xffff;
   common_cfg->queue_enable = ready;
+  __sync_synchronize();
 }
 
 void
@@ -304,12 +326,15 @@ virtio_pci_notify(uint16 queue)
   uint16 off;
 
   common_cfg->queue_select = queue;
+  __sync_synchronize();
   off = common_cfg->queue_notify_off;
   *(volatile uint16*)((uint64)notify_cfg + off * notify_off_multiplier) = queue;
+  __sync_synchronize();
 }
 
 void
 virtio_pci_intr_ack(void)
 {
   (void)*isr_cfg;
+  __sync_synchronize();
 }

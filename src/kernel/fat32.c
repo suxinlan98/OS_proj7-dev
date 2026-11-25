@@ -72,6 +72,17 @@ struct fat32_dirent {
   uint size;
 } __attribute__((packed));
 
+struct fat32_lfn_dirent {
+  uchar ord;
+  ushort name1[5];
+  uchar attr;
+  uchar type;
+  uchar cksum;
+  ushort name2[6];
+  ushort first_clus_lo;
+  ushort name3[2];
+} __attribute__((packed));
+
 static struct fat32_fs fat32fs;
 static struct inode_ops fat32_inode_ops;
 static struct fs_ops fat32_fs_ops;
@@ -761,14 +772,13 @@ fat32_lfn_checksum(uchar *name83)
 }
 
 static ushort
-fat32_lfn_char(struct fat32_dirent *de, int i)
+fat32_lfn_char(const struct fat32_lfn_dirent *lde, int i)
 {
-  // the 13 UTF-16LE characters of a fragment live at byte offsets
-  // 1..10, 14..25 and 28..31
-  static const uchar off[13] = { 1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30 };
-  uchar *p = (uchar*)de;
-
-  return p[off[i]] | (p[off[i] + 1] << 8);
+  if(i < 5)
+    return lde->name1[i];
+  if(i < 11)
+    return lde->name2[i - 5];
+  return lde->name3[i - 11];
 }
 
 static void
@@ -784,24 +794,24 @@ fat32_lfn_reset(struct fat32_lfn *st)
 static void
 fat32_lfn_feed(struct fat32_lfn *st, struct fat32_dirent *de, uint slot_off)
 {
+  const struct fat32_lfn_dirent *lde = (const struct fat32_lfn_dirent*)de;
   int seq, i, pos;
   ushort w;
-  uchar cksum = ((uchar*)de)[13];
 
-  seq = de->name[0] & 0x3F;
+  seq = lde->ord & 0x3F;
   if(seq < 1 || seq > FAT32_MAX_LFN_SLOTS){
     fat32_lfn_reset(st);
     return;
   }
-  if(de->name[0] & 0x40){
+  if(lde->ord & 0x40){
     // logically last fragment, stored first: starts a new chain
     st->expect = seq;
     st->ready = 0;
-    st->cksum = cksum;
+    st->cksum = lde->cksum;
     st->endpos = seq * 13;
     st->slot_cnt = 0;
     memset(st->name, 0, sizeof(st->name));
-  } else if(st->expect == 0 || seq != st->expect || cksum != st->cksum){
+  } else if(st->expect == 0 || seq != st->expect || lde->cksum != st->cksum){
     fat32_lfn_reset(st);        // out of order or checksum mismatch
     return;
   }
@@ -811,7 +821,7 @@ fat32_lfn_feed(struct fat32_lfn *st, struct fat32_dirent *de, uint slot_off)
 
   for(i = 0; i < 13; i++){
     pos = (seq - 1) * 13 + i;
-    w = fat32_lfn_char(de, i);
+    w = fat32_lfn_char(lde, i);
     if(w == 0x0000 || w == 0xFFFF){
       if(pos < st->endpos)
         st->endpos = pos;       // terminator or padding
@@ -1214,7 +1224,8 @@ fat32_create(struct inode *dp, char *name, short type, short major, short minor)
       fat32_free_chain(fs, clus);
       return 0;
     }
-    if(fat32_add_entry(&tmp, dotdot, FAT32_ATTR_DIR, dp->addrs[0], 0,
+    uint dotdot_clus = (dp->addrs[0] == fs->root_clus) ? 0 : dp->addrs[0];
+    if(fat32_add_entry(&tmp, dotdot, FAT32_ATTR_DIR, dotdot_clus, 0,
                        &dot_off) < 0){
       fat32_remove_entry(fs, entry_off);
       fat32_free_chain(fs, clus);
