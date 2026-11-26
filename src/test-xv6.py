@@ -31,7 +31,7 @@ class QEMU(object):
                                       preexec_fn=os.setsid)
         self.output = ""
         self.outbytes = bytearray()
-        time.sleep(5)
+        self.wait_output(r'(?:^|\n)\$ ', timeout=30)
 
     def reset_fs(self):
         try:
@@ -64,15 +64,31 @@ class QEMU(object):
         self.proc.stdin.flush()
 
     def crash(self):
-        ps = run(['ps', '-opid', '--no-headers', '--ppid', str(self.proc.pid)],
+        try:
+            pgid = os.getpgid(self.proc.pid)
+        except ProcessLookupError:
+            pgid = self.proc.pid
+        ps = run(['ps', '-o', 'pid=,comm=', '-g', str(pgid)],
                  stdout=subprocess.PIPE, encoding='utf8')
-        kids = [int(line) for line in ps.stdout.splitlines() if line.strip()]
-        if len(kids) == 0:
+        qemu_pids = []
+        for line in ps.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and parts[1].startswith("qemu-system-"):
+                qemu_pids.append(int(parts[0]))
+        if not qemu_pids:
+            ps = run(['ps', '-opid', '--no-headers', '--ppid', str(self.proc.pid)],
+                     stdout=subprocess.PIPE, encoding='utf8')
+            qemu_pids = [int(line) for line in ps.stdout.splitlines() if line.strip()]
+        if not qemu_pids:
             print("no qemu")
             self.stop()
             sys.exit(1)
-        print("kill", kids[0])
-        os.kill(kids[0], signal.SIGKILL)
+        for pid in qemu_pids:
+            print("kill", pid)
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def stop(self):
         try:
@@ -91,9 +107,10 @@ class QEMU(object):
             except Exception:
                 pass
 
-    def read(self, timeout=0.5):
+    def read(self, timeout=0.5, idle_timeout=0.05):
         fd = self.proc.stdout.fileno()
-        deadline = time.time() + timeout
+        hard_deadline = time.time() + timeout
+        deadline = hard_deadline
         while True:
             rem = max(0.0, deadline - time.time())
             r, _, _ = select.select([fd], [], [], rem)
@@ -104,14 +121,31 @@ class QEMU(object):
                 break
             self.outbytes.extend(buf)
             self.output = self.outbytes.decode("utf-8", "replace")
-            # Keep draining while more bytes are immediately ready.
-            deadline = time.time()
+            deadline = min(hard_deadline, time.time() + idle_timeout)
+
+    def wait_output(self, pattern, timeout=30, start_pos=0):
+        deadline = time.time() + timeout
+        while True:
+            if re.search(pattern, self.output[start_pos:], re.M):
+                return True
+            if self.proc.poll() is not None:
+                self.read(timeout=0.1)
+                return bool(re.search(pattern, self.output[start_pos:], re.M))
+            rem = deadline - time.time()
+            if rem <= 0:
+                return False
+            self.read(timeout=min(0.5, rem))
 
     def lines(self):
         return self.output.splitlines()
 
     def error(self, regexps=()):
         print("FAIL: match failed", regexps)
+        tail = self.lines()[-30:]
+        if tail:
+            print("--- qemu output tail ---")
+            for line in tail:
+                print(line)
         self.save_output()
         self.stop()
         sys.exit(1)
@@ -159,55 +193,54 @@ class QEMU(object):
                         return
                 self.error(regexps)
 
-def crash_log():
+def crash_log(attempt=0):
     q = QEMU(True)
     q.cmd("logstress f0 f1 f2 f3 f4 f5\n")
-    time.sleep(2)
+    time.sleep(1.5 + 0.15 * (attempt % 5))
     q.crash()
     q.stop()
 
 def recover_log():
     q = QEMU()
-    time.sleep(2)
-    q.read()
     ok, _ = q.match('^recovering', exit=False)
     if ok:
+        pos = len(q.output)
         q.cmd("ls\n")
-        time.sleep(2)
-        q.read()
+        q.wait_output(r'(?:^|\n)\$ ', timeout=15, start_pos=pos)
         q.match('f5')
     q.stop()
     return ok
 
 def forphan():
     q = QEMU(True)
+    pos = len(q.output)
     q.cmd("forphan\n")
-    time.sleep(5)
-    q.read()
+    q.wait_output(r'^wait\b', timeout=15, start_pos=pos)
     q.match('wait')
     q.crash()
     q.stop()
 
 def dorphan():
     q = QEMU(True)
+    pos = len(q.output)
     q.cmd("dorphan\n")
-    time.sleep(5)
-    q.read()
+    q.wait_output(r'^wait\b', timeout=15, start_pos=pos)
     q.match('wait')
     q.crash()
     q.stop()
 
 def recover_orphan():
     q = QEMU()
-    time.sleep(2)
-    q.read()
     q.match('^ireclaim')
     q.stop()
 
 def test_log():
     print("Test recovery of log")
-    for i in range(5):
-        crash_log()
+    # Physical redo WAL spends roughly 1/3 of each commit cycle inside
+    # install_trans() (between committing and clearing the log header), so
+    # allow enough independent random-crash attempts to avoid false failures.
+    for i in range(25):
+        crash_log(i)
         ok = recover_log()
         if ok:
             print("OK")

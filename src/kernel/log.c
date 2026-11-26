@@ -3,6 +3,7 @@
 #include "defs.h"
 #include "param.h"
 #include "spinlock.h"
+#include "proc.h"
 #include "sleeplock.h"
 #include "fs.h"
 #include "buf.h"
@@ -43,12 +44,38 @@ struct log {
   int outstanding; // how many FS sys calls are executing.
   int committing;  // in commit(), please wait.
   int dev;
+  int waiters;     // procs currently sleeping for log space or commit
+  int cur_nwriters;
+  int cur_writers[LOGBLOCKS];  // PIDs that dirtied the active transaction
+  int prev_nwriters;
+  int prev_writers[LOGBLOCKS]; // PIDs that dirtied the last committed transaction
   struct logheader lh;
 };
 struct log log;
 
 static void recover_from_log(void);
-static void commit();
+static int commit(void);
+
+static int
+is_prev_writer(int pid)
+{
+  for(int i = 0; i < log.prev_nwriters; i++){
+    if(log.prev_writers[i] == pid)
+      return 1;
+  }
+  return 0;
+}
+
+static void
+record_cur_writer(int pid)
+{
+  for(int i = 0; i < log.cur_nwriters; i++){
+    if(log.cur_writers[i] == pid)
+      return;
+  }
+  if(log.cur_nwriters < LOGBLOCKS)
+    log.cur_writers[log.cur_nwriters++] = pid;
+}
 
 void
 initlog(int dev, struct superblock *sb)
@@ -59,6 +86,9 @@ initlog(int dev, struct superblock *sb)
   initlock(&log.lock, "log");
   log.start = sb->logstart;
   log.dev = dev;
+  log.waiters = 0;
+  log.cur_nwriters = 0;
+  log.prev_nwriters = 0;
   recover_from_log();
 }
 
@@ -127,12 +157,21 @@ recover_from_log(void)
 void
 begin_op(void)
 {
+  struct proc *p = myproc();
+  int pid = p ? p->pid : 0;
+
   acquire(&log.lock);
   while(1){
-    if(log.committing){
+    if(log.committing ||
+       log.lh.n + (log.outstanding+1)*MAXOPBLOCKS > LOGBLOCKS){
+      // Wait for commit or log space.
+      log.waiters++;
       sleep(&log, &log.lock);
-    } else if(log.lh.n + (log.outstanding+1)*MAXOPBLOCKS > LOGBLOCKS){
-      // this op might exhaust log space; wait for commit.
+      log.waiters--;
+    } else if(pid > 0 && log.waiters > 0 && is_prev_writer(pid)){
+      // This process already dirtied the previous committed transaction
+      // while other processes are waiting; yield one turn so lower-slot
+      // writers cannot starve higher-slot writers.
       sleep(&log, &log.lock);
     } else {
       log.outstanding += 1;
@@ -167,8 +206,16 @@ end_op(void)
   if(do_commit){
     // call commit w/o holding locks, since not allowed
     // to sleep with locks.
-    commit();
+    int committed = commit();
     acquire(&log.lock);
+    if(committed){
+      log.prev_nwriters = log.cur_nwriters;
+      for(int i = 0; i < log.cur_nwriters; i++)
+        log.prev_writers[i] = log.cur_writers[i];
+      log.cur_nwriters = 0;
+    } else {
+      log.prev_nwriters = 0;
+    }
     log.committing = 0;
     wakeup(&log);
     release(&log.lock);
@@ -191,8 +238,8 @@ write_log(void)
   }
 }
 
-static void
-commit()
+static int
+commit(void)
 {
   if (log.lh.n > 0) {
     write_log();     // Write modified blocks from cache to log
@@ -200,7 +247,9 @@ commit()
     install_trans(0); // Now install writes to home locations
     log.lh.n = 0;
     write_head();    // Erase the transaction from the log
+    return 1;
   }
+  return 0;
 }
 
 // Caller has modified b->data and is done with the buffer.
@@ -216,6 +265,7 @@ void
 log_write(struct buf *b)
 {
   int i;
+  struct proc *p = myproc();
 
   acquire(&log.lock);
   if (log.lh.n >= LOGBLOCKS)
@@ -232,6 +282,8 @@ log_write(struct buf *b)
     bpin(b);
     log.lh.n++;
   }
+  if (p && p->pid > 0)
+    record_cur_writer(p->pid);
   release(&log.lock);
 }
 
