@@ -193,12 +193,23 @@ class QEMU(object):
                         return
                 self.error(regexps)
 
-def crash_log(attempt=0):
+def crash_log(delay=1.5):
     q = QEMU(True)
+    pos = len(q.output)
+    t0 = time.time()
     q.cmd("logstress f0 f1 f2 f3 f4 f5\n")
-    time.sleep(1.5 + 0.15 * (attempt % 5))
+    # Monitor stdout while waiting: on fast runners (e.g. LoongArch CI)
+    # logstress can fill fs.img and exit in <1.5s, leaving an empty log if we
+    # keep sleeping blindly past completion.
+    finished_early = q.wait_output(
+        r'(?:^|\n)\$ |balloc: out of blocks',
+        timeout=delay,
+        start_pos=pos,
+    )
+    elapsed = time.time() - t0
     q.crash()
     q.stop()
+    return finished_early, elapsed
 
 def recover_log():
     q = QEMU()
@@ -238,14 +249,22 @@ def test_log():
     print("Test recovery of log")
     # Physical redo WAL spends roughly 1/3 of each commit cycle inside
     # install_trans() (between committing and clearing the log header), so
-    # allow enough independent random-crash attempts to avoid false failures.
+    # allow enough independent random-crash attempts and auto-calibrate the
+    # crash delay if logstress finishes early on a fast host.
+    base_delay = 1.5
+    jitters = (0.0, 0.12, -0.10, 0.20, -0.15)
     for i in range(25):
-        crash_log(i)
+        delay = max(0.10, base_delay * (1.0 + jitters[i % len(jitters)]))
+        finished_early, elapsed = crash_log(delay)
+        if finished_early:
+            base_delay = max(0.10, min(base_delay * 0.6, elapsed * 0.55))
+            print(f"log attempt {i+1}: logstress finished early in {elapsed:.2f}s, recalibrating delay to {base_delay:.2f}s")
+            continue
         ok = recover_log()
         if ok:
             print("OK")
             return
-        print("log attempt ", i+1)
+        print(f"log attempt {i+1} (delay={delay:.2f}s)")
     print("FAIL")
     sys.exit(1)
     
@@ -281,6 +300,8 @@ def test_usertests(test=""):
     q.stop()
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     print(args)
     rex = r'%s' % args.testrex
     funcs = [(obj,name) for name,obj in inspect.getmembers(sys.modules[__name__]) 

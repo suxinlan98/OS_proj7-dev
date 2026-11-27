@@ -409,6 +409,17 @@ kexit(int status)
   end_op();
   p->cwd = 0;
 
+  // Free the exiting process's own user address space and trapframe in
+  // parallel here (with no locks held) rather than serializing all zombie
+  // page-table teardown onto init/parent inside kwait().
+  struct trapframe *tf = p->trapframe;
+  pagetable_t pt = p->pagetable;
+  uint64 sz = p->sz;
+  p->trapframe = 0;
+  p->pagetable = 0;
+  p->sz = 0;
+  releaseproc_mem(tf, pt, sz);
+
   acquire(&wait_lock);
 
   // Give any children to init.
